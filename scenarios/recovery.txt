@@ -1,0 +1,26 @@
+# Recovery Scenario: Circular wait deadlock followed by recovery action
+PROCESS P1
+PROCESS P2
+
+RESOURCE R1 1
+RESOURCE R2 1
+
+MAX P1 R1 1
+MAX P1 R2 1
+MAX P2 R1 1
+MAX P2 R2 1
+
+REQUEST P1 R1 1
+REQUEST P2 R2 1
+
+REQUEST P1 R2 1
+REQUEST P2 R1 1
+
+# Detect circular wait
+DETECT
+
+# Execute recovery by aborting process 1 (P1)
+RECOVER 1
+
+# Detect again to confirm deadlock is broken
+DETECT

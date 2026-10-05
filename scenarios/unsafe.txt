@@ -1,0 +1,20 @@
+# Unsafe State Scenario - Banker's Algorithm
+# Demonstrates detection of an unsafe state and Banker avoidance blocking unsafe requests
+PROCESS P1
+PROCESS P2
+
+RESOURCE R1 3
+
+MAX P1 R1 3
+MAX P2 R1 3
+
+# Allocate resources such that remaining available cannot satisfy either process's need
+REQUEST P1 R1 1
+REQUEST P2 R1 1
+
+# System Banker Safety Check on unsafe state (Available=1, Need P1=2, Need P2=2)
+BANKER
+
+# Enable Banker Avoidance Mode: subsequent request that leads to unsafe state is blocked
+BANKER-MODE ON
+REQUEST P1 R1 1

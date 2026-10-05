@@ -1,0 +1,33 @@
+# Safe State Scenario - Banker's Algorithm
+# Demonstrates process/resource creation, allocation, release, and Banker's safety check
+PROCESS P1
+PROCESS P2
+PROCESS P3
+
+RESOURCE R1 10
+RESOURCE R2 5
+RESOURCE R3 7
+
+MAX P1 R1 7
+MAX P1 R2 5
+MAX P1 R3 3
+
+MAX P2 R1 3
+MAX P2 R2 2
+MAX P2 R3 2
+
+MAX P3 R1 9
+MAX P3 R2 0
+MAX P3 R3 2
+
+REQUEST P1 R2 1
+REQUEST P2 R1 2
+REQUEST P3 R1 3
+REQUEST P3 R3 2
+
+# Demonstrate release and re-allocation
+RELEASE P1 R2 1
+REQUEST P1 R2 1
+
+# Check system safety
+BANKER
