@@ -1,0 +1,62 @@
+# ==============================================================================
+# Scenario: High Concurrency Multi-Process Stress Test
+# Demonstrates:
+#   5 processes (P1..P5) and 4 resource types (R1..R4) with interleaved requests,
+#   releases, status monitoring, and deadlock verification.
+# ==============================================================================
+
+PROCESS P1
+PROCESS P2
+PROCESS P3
+PROCESS P4
+PROCESS P5
+
+RESOURCE R1 6
+RESOURCE R2 5
+RESOURCE R3 7
+RESOURCE R4 4
+
+MAX P1 R1 3
+MAX P1 R2 2
+MAX P1 R3 2
+MAX P1 R4 1
+
+MAX P2 R1 2
+MAX P2 R2 3
+MAX P2 R3 3
+MAX P2 R4 2
+
+MAX P3 R1 3
+MAX P3 R2 1
+MAX P3 R3 4
+MAX P3 R4 2
+
+MAX P4 R1 2
+MAX P4 R2 2
+MAX P4 R3 2
+MAX P4 R4 1
+
+MAX P5 R1 4
+MAX P5 R2 2
+MAX P5 R3 3
+MAX P5 R4 2
+
+# Interleaved grants
+REQUEST P1 R1 2
+REQUEST P2 R2 2
+REQUEST P3 R3 3
+REQUEST P4 R4 1
+REQUEST P5 R1 2
+
+BANKER
+STATUS
+
+# Secondary requests and releases
+REQUEST P1 R2 1
+REQUEST P2 R3 1
+RELEASE P1 R1 1
+REQUEST P3 R4 1
+RELEASE P3 R3 1
+
+GRAPH
+DETECT

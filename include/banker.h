@@ -33,6 +33,7 @@ bool banker_check_request_safety(const BankerSystem *bs,
                                 int *safe_sequence,
                                 int *seq_len);
 
+void banker_print_matrices(const BankerSystem *bs);
 void banker_print_safety_report(const BankerSystem *bs);
 
 #endif /* DEADLOCKDOCTOR_BANKER_H */

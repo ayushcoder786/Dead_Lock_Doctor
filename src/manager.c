@@ -1,19 +1,235 @@
-#include <sys/wait.h>
 #include "manager.h"
 #include "scenario.h"
 #include "logger.h"
 #include "recovery.h"
 #include "process_demo.h"
 #include "ipc.h"
+#include "benchmark.h"
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include <limits.h>
+#include <readline/readline.h>
+#include <readline/history.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+#define MAX_SHELL_ARGS 128
+
+static int s_last_exit_status = 0;
+static char s_old_pwd[PATH_MAX] = "";
+static volatile sig_atomic_t s_shell_sigint = 0;
+
+static void shell_sigint_handler(int sig) {
+    (void)sig;
+    s_shell_sigint = 1;
+}
+
+static int parse_command_line(const char *input, char *token_buf, size_t buf_size, char *args[], int max_args) {
+    if (!input || !token_buf || buf_size == 0 || !args || max_args <= 1) {
+        if (args && max_args > 0) args[0] = NULL;
+        return 0;
+    }
+
+    int argc = 0;
+    size_t out_idx = 0;
+    const char *p = input;
+
+    while (*p && argc < max_args - 1) {
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        if (!*p) break;
+
+        args[argc++] = &token_buf[out_idx];
+
+        while (*p && !isspace((unsigned char)*p)) {
+            if (*p == 34 || *p == 39) {
+                char quote = *p++;
+                while (*p && *p != quote) {
+                    if (*p == 92 && *(p + 1) == quote) {
+                        p++;
+                    }
+                    if (out_idx + 1 < buf_size) {
+                        token_buf[out_idx++] = *p;
+                    }
+                    p++;
+                }
+                if (*p == quote) {
+                    p++;
+                }
+            } else if (*p == 92 && *(p + 1) != 0) {
+                p++;
+                if (out_idx + 1 < buf_size) {
+                    token_buf[out_idx++] = *p;
+                }
+                p++;
+            } else {
+                if (out_idx + 1 < buf_size) {
+                    token_buf[out_idx++] = *p;
+                }
+                p++;
+            }
+        }
+
+        if (out_idx < buf_size) {
+            token_buf[out_idx++] = 0;
+        } else {
+            token_buf[buf_size - 1] = 0;
+            break;
+        }
+    }
+
+    args[argc] = NULL;
+    return argc;
+}
+
+static void expand_exit_status(char *args[], int argc, char *exit_buf, size_t exit_buf_size, int exit_code) {
+    snprintf(exit_buf, exit_buf_size, "%d", exit_code);
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(args[i], "$?") == 0) {
+            args[i] = exit_buf;
+        }
+    }
+}
+
+static int execute_external_command(char **args) {
+    if (!args || !args[0] || args[0][0] == 0) {
+        return 0;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
+
+    if (pid == 0) {
+        struct sigaction sa_dfl;
+        memset(&sa_dfl, 0, sizeof(sa_dfl));
+        sa_dfl.sa_handler = SIG_DFL;
+        sigaction(SIGINT, &sa_dfl, NULL);
+        sigaction(SIGQUIT, &sa_dfl, NULL);
+
+        execvp(args[0], args);
+
+        if (errno == ENOENT) {
+            if (strchr(args[0], '/') == NULL) {
+                fprintf(stderr, "%s: command not found\n", args[0]);
+            } else {
+                fprintf(stderr, "%s: No such file or directory\n", args[0]);
+            }
+            _exit(127);
+        } else {
+            fprintf(stderr, "%s: %s\n", args[0], strerror(errno));
+            _exit(126);
+        }
+    }
+
+    struct sigaction sa_ign, sa_orig_int, sa_orig_quit;
+    memset(&sa_ign, 0, sizeof(sa_ign));
+    sa_ign.sa_handler = SIG_IGN;
+    sigaction(SIGINT, &sa_ign, &sa_orig_int);
+    sigaction(SIGQUIT, &sa_ign, &sa_orig_quit);
+
+    int status = 0;
+    int exit_code = 0;
+
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) {
+            continue;
+        }
+        perror("waitpid");
+        exit_code = -1;
+        break;
+    }
+
+    sigaction(SIGINT, &sa_orig_int, NULL);
+    sigaction(SIGQUIT, &sa_orig_quit, NULL);
+
+    if (exit_code == 0) {
+        if (WIFEXITED(status)) {
+            exit_code = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            exit_code = 128 + WTERMSIG(status);
+            if (WTERMSIG(status) == SIGINT) {
+                printf("\n");
+            }
+        }
+    }
+
+    return exit_code;
+}
 
 void system_manager_init(SystemManager *sm) {
     if (!sm) return;
     process_manager_init(&sm->pm);
     resource_manager_init(&sm->rm);
     sm->is_running = true;
+    sm->strategy = STRATEGY_DETECTION_RECOVERY;
     sm->banker_avoidance_enabled = false; /* Detection mode by default; enable via banker-mode on */
     logger_init(DEFAULT_LOG_FILE);
     logger_log(LOG_INFO, "DeadlockDoctor system manager initialized.");
+}
+
+void system_manager_set_strategy(SystemManager *sm, DeadlockStrategy strat) {
+    if (!sm) return;
+    sm->strategy = strat;
+    sm->banker_avoidance_enabled = (strat == STRATEGY_BANKER_AVOIDANCE);
+    logger_log(LOG_INFO, "Deadlock management strategy set to: %s", system_manager_get_strategy_name(strat));
+}
+
+const char *system_manager_get_strategy_name(DeadlockStrategy strat) {
+    switch (strat) {
+        case STRATEGY_DETECTION_RECOVERY: return "Detection & Recovery";
+        case STRATEGY_RESOURCE_ORDERING:  return "Resource Ordering (Prevention)";
+        case STRATEGY_ALL_OR_NOTHING:     return "All-or-Nothing (Prevention)";
+        case STRATEGY_BANKER_AVOIDANCE:   return "Banker's Avoidance";
+        default:                          return "Unknown";
+    }
+}
+
+void system_manager_print_strategy_comparison(void) {
+    printf("\n========================================================================================================\n");
+    printf("                     DEADLOCK MANAGEMENT STRATEGIES & TRADE-OFF COMPARISON                              \n");
+    printf("========================================================================================================\n\n");
+
+    printf("+-----------------------------------+---------------+-------------+--------------+------------------+------------------+-------------------+\n");
+    printf("| Strategy                          | Resource Util | Concurrency | Waiting Time | Implementation   | Starvation Risk  | Recovery Overhead |\n");
+    printf("+-----------------------------------+---------------+-------------+--------------+------------------+------------------+-------------------+\n");
+    printf("| 1. Global Resource Ordering (Prev)| Moderate      | Moderate    | Low          | Simple (O(1))    | Low              | None (0 cycles)   |\n");
+    printf("| 2. All-or-Nothing (Hold-Wait Prev)| Low           | Low         | High         | Low (Atomic)     | HIGH (Starvation)| None (0 cycles)   |\n");
+    printf("| 3. Banker's Algorithm (Avoidance) | High          | High        | Moderate     | High (O(m*n^2))  | Low              | None (0 cycles)   |\n");
+    printf("| 4. Deadlock Detection & Recovery  | Very High     | Maximum     | Minimal      | Moderate (O(m*n))| Zero             | High (Abortion)   |\n");
+    printf("+-----------------------------------+---------------+-------------+--------------+------------------+------------------+-------------------+\n\n");
+
+    printf("[STRATEGY ANALYSIS & OS VIVA REFERENCE]\n");
+    printf("  A. Global Resource Ordering (Havender's Rule):\n");
+    printf("     - Breaks Coffman Condition #4: Circular Wait.\n");
+    printf("     - Requires resources to be acquired in ascending global index order (R1 < R2 < R3 ...).\n");
+    printf("     - Advantage: No runtime deadlock detection overhead; guarantees zero deadlocks.\n");
+    printf("     - Disadvantage: Inflexible; out-of-order resource requests are blocked even if free.\n\n");
+
+    printf("  B. All-or-Nothing Allocation:\n");
+    printf("     - Breaks Coffman Condition #2: Hold and Wait.\n");
+    printf("     - A process must acquire its entire resource set atomically; if any resource is busy, none are held.\n");
+    printf("     - Advantage: Simple to enforce.\n");
+    printf("     - Disadvantage: Severe resource under-utilization; processes requiring multiple resources risk starvation!\n\n");
+
+    printf("  C. Banker's Avoidance Algorithm:\n");
+    printf("     - Dynamically inspects maximum demand and remaining available resources before every grant.\n");
+    printf("     - Advantage: High utilization without ever needing to abort running processes.\n");
+    printf("     - Disadvantage: Requires processes to declare maximum demands in advance; O(m * n^2) runtime overhead.\n\n");
+
+    printf("  D. Deadlock Detection & Victim Recovery:\n");
+    printf("     - Grants resources optimistically as requested. Detects cycles periodically via vector reduction.\n");
+    printf("     - Advantage: Maximum concurrency; no pre-declared maximum needed.\n");
+    printf("     - Disadvantage: Incurs victim abortion, lost computation, and resource preemption overhead.\n");
+    printf("========================================================================================================\n\n");
 }
 
 void system_manager_cleanup(SystemManager *sm) {
@@ -136,6 +352,33 @@ AllocResult system_manager_request(SystemManager *sm, const char *proc_ident, co
             printf("[INVALID REQUEST] Process '%s' requested %d units of '%s', exceeding total capacity (%d).\n",
                    proc->name, units, res->name, res->total_instances);
             return ALLOC_INVALID;
+        }
+    }
+
+    /* Check Strategy Constraints */
+    if (sm->strategy == STRATEGY_RESOURCE_ORDERING) {
+        int max_held_idx = -1;
+        for (int r = 0; r < sm->rm.count; r++) {
+            if (r < proc->res_capacity && proc->allocated[r] > 0) {
+                if (r > max_held_idx) max_held_idx = r;
+            }
+        }
+        if (max_held_idx >= 0 && res_idx < max_held_idx) {
+            printf("[PREVENTION - RESOURCE ORDERING] Request REJECTED!\n");
+            printf("  Process '%s' currently holds '%s' (Index %d), but requested '%s' (Index %d).\n",
+                   proc->name, sm->rm.resources[max_held_idx].name, max_held_idx, res->name, res_idx);
+            printf("  Enforcing strict global ordering (R1 < R2 < R3 ...) to eliminate Circular Wait.\n");
+            logger_log(LOG_RESOURCE_BLOCK, "Process '%s' request for '%s' REJECTED by Resource Ordering (Holds higher index '%s').",
+                       proc->name, res->name, sm->rm.resources[max_held_idx].name);
+            return ALLOC_BLOCKED;
+        }
+    } else if (sm->strategy == STRATEGY_ALL_OR_NOTHING) {
+        if (units > res->available_instances) {
+            printf("[PREVENTION - ALL-OR-NOTHING] Request BLOCKED!\n");
+            printf("  Process '%s' requested %d units of '%s' (only %d available).\n",
+                   proc->name, units, res->name, res->available_instances);
+            printf("  All-or-Nothing policy prevents holding partial allocations to eliminate Hold-and-Wait.\n");
+            return ALLOC_BLOCKED;
         }
     }
 
@@ -522,13 +765,263 @@ void system_manager_run_thread_demo(void) {
     }
 }
 
+
+void system_manager_run_full_demo(void) {
+    printf("\n");
+    printf("================================================================================\n");
+    printf("          DEADLOCKDOCTOR: COMPLETE OPERATING SYSTEMS DEMONSTRATION             \n");
+    printf("================================================================================\n");
+    printf(" Presentation-ready demonstration of Process & Resource Management,\n");
+    printf(" Banker's Safety Algorithm, Deadlock Cycle Detection, Graph Theory, and Recovery.\n");
+    printf("================================================================================\n\n");
+
+    /* ========================================================================
+     * STAGE 1: RESOURCE MANAGEMENT
+     * ======================================================================== */
+    printf("--------------------------------------------------------------------------------\n");
+    printf("STAGE 1: RESOURCE MANAGEMENT (CREATION, CLAIMS, ALLOCATION, REQUESTS)\n");
+    printf("--------------------------------------------------------------------------------\n");
+    printf("Concept: Operating Systems track active processes and resource inventory via\n");
+    printf("state vectors and allocation matrices.\n\n");
+
+    SystemManager sm1;
+    system_manager_init(&sm1);
+
+    printf("[Step 1.1] Registering multi-instance system resources...\n");
+    system_manager_create_resource(&sm1, 1, "R1", 10);
+    system_manager_create_resource(&sm1, 2, "R2", 5);
+    system_manager_create_resource(&sm1, 3, "R3", 7);
+    printf("  -> Created R1 (10 units), R2 (5 units), R3 (7 units)\n\n");
+
+    printf("[Step 1.2] Registering active processes...\n");
+    system_manager_create_process(&sm1, 1, "P1");
+    system_manager_create_process(&sm1, 2, "P2");
+    system_manager_create_process(&sm1, 3, "P3");
+    printf("  -> Created processes P1, P2, P3 in READY state\n\n");
+
+    printf("[Step 1.3] Declaring maximum resource demands (Max Claims)...\n");
+    system_manager_set_max(&sm1, "P1", "R1", 7);
+    system_manager_set_max(&sm1, "P1", "R2", 5);
+    system_manager_set_max(&sm1, "P1", "R3", 3);
+    system_manager_set_max(&sm1, "P2", "R1", 3);
+    system_manager_set_max(&sm1, "P2", "R2", 2);
+    system_manager_set_max(&sm1, "P2", "R3", 2);
+    system_manager_set_max(&sm1, "P3", "R1", 9);
+    system_manager_set_max(&sm1, "P3", "R2", 0);
+    system_manager_set_max(&sm1, "P3", "R3", 2);
+    printf("  -> Max claims declared for all processes across R1, R2, R3\n\n");
+
+    printf("[Step 1.4] Allocating initial resource instances...\n");
+    system_manager_request(&sm1, "P1", "R2", 1);
+    system_manager_request(&sm1, "P2", "R1", 2);
+    system_manager_request(&sm1, "P3", "R1", 3);
+    system_manager_request(&sm1, "P3", "R3", 2);
+    printf("\n");
+
+    printf("[Step 1.5] Inspecting Resource Inventory & Process Allocation Matrix:\n");
+    system_manager_show_status(&sm1);
+
+    printf("[Step 1.6] Demonstrating Resource Release & Re-allocation...\n");
+    system_manager_release(&sm1, "P1", "R2", 1);
+    system_manager_request(&sm1, "P1", "R2", 1);
+    printf("  -> Verified dynamic resource release and grant cycles.\n\n");
+
+    system_manager_cleanup(&sm1);
+    printf(">>> STAGE 1 COMPLETED: Resource state cleanly verified and reset <<<\n\n");
+
+    /* ========================================================================
+     * STAGE 2: BANKER'S ALGORITHM
+     * ======================================================================== */
+    printf("--------------------------------------------------------------------------------\n");
+    printf("STAGE 2: BANKER'S ALGORITHM (MATHEMATICALLY VALID SAFE STATE & UNSAFE REQUEST)\n");
+    printf("--------------------------------------------------------------------------------\n");
+    printf("Concept: Dijkstra's Banker's Algorithm prevents deadlock by verifying that at\n");
+    printf("least one safe execution sequence exists where all processes can finish.\n\n");
+
+    SystemManager sm2;
+    system_manager_init(&sm2);
+
+    /* Setup textbook safe state */
+    system_manager_create_resource(&sm2, 1, "R1", 10);
+    system_manager_create_resource(&sm2, 2, "R2", 5);
+    system_manager_create_resource(&sm2, 3, "R3", 7);
+
+    system_manager_create_process(&sm2, 1, "P1");
+    system_manager_create_process(&sm2, 2, "P2");
+    system_manager_create_process(&sm2, 3, "P3");
+
+    system_manager_set_max(&sm2, "P1", "R1", 7);
+    system_manager_set_max(&sm2, "P1", "R2", 5);
+    system_manager_set_max(&sm2, "P1", "R3", 3);
+    system_manager_set_max(&sm2, "P2", "R1", 3);
+    system_manager_set_max(&sm2, "P2", "R2", 2);
+    system_manager_set_max(&sm2, "P2", "R3", 2);
+    system_manager_set_max(&sm2, "P3", "R1", 9);
+    system_manager_set_max(&sm2, "P3", "R2", 0);
+    system_manager_set_max(&sm2, "P3", "R3", 2);
+
+    system_manager_request(&sm2, "P1", "R2", 1);
+    system_manager_request(&sm2, "P2", "R1", 2);
+    system_manager_request(&sm2, "P3", "R1", 3);
+    system_manager_request(&sm2, "P3", "R3", 2);
+
+    printf("[Step 2.1] Evaluating Banker's Safety Algorithm on Current State:\n");
+    BankerSystem bs;
+    banker_system_init(&bs);
+    banker_init_from_manager(&bs, &sm2.pm, &sm2.rm);
+    banker_print_safety_report(&bs);
+
+    int safe_seq[MAX_PROCESSES];
+    int seq_len = 0;
+    bool is_safe = banker_is_safe(&bs, safe_seq, &seq_len);
+    printf("  [Mathematical Verification]\n");
+    printf("  * Available Vector : [ R1:%d, R2:%d, R3:%d ]\n",
+           bs.available[0], bs.available[1], bs.available[2]);
+    printf("  * Need Matrix      : P1=[7,4,3], P2=[1,2,2], P3=[6,0,0]\n");
+    printf("  * State Verdict    : %s\n", is_safe ? "SAFE STATE GUARANTEED" : "UNSAFE");
+    if (is_safe) {
+        printf("  * Safe Sequence    : ");
+        for (int i = 0; i < seq_len; i++) {
+            printf("%s%s", bs.process_names[safe_seq[i]], (i == seq_len - 1) ? "\n\n" : " -> ");
+        }
+    }
+    banker_system_cleanup(&bs);
+
+    printf("[Step 2.2] Demonstrating Banker Avoidance of an Unsafe Request:\n");
+    printf("  Enabling Banker Avoidance Mode (banker-mode on)...\n");
+    sm2.banker_avoidance_enabled = true;
+    printf("  Process 'P1' attempts to request 5 additional units of 'R1'...\n");
+    printf("  Analysis: If granted, Available R1 drops to 0 (cannot satisfy P2's need of 1).\n");
+    AllocResult unsafe_req = system_manager_request(&sm2, "P1", "R1", 5);
+    if (unsafe_req == ALLOC_BLOCKED) {
+        printf("  >>> [SUCCESS] Banker Avoidance BLOCKED the request! System remains in a SAFE state. <<<\n\n");
+    }
+
+    system_manager_cleanup(&sm2);
+    printf(">>> STAGE 2 COMPLETED: Banker safe sequence & avoidance verified <<<\n\n");
+
+    /* ========================================================================
+     * STAGE 3: DEADLOCK DETECTION & GRAPH
+     * ======================================================================== */
+    printf("--------------------------------------------------------------------------------\n");
+    printf("STAGE 3: DEADLOCK DETECTION (CIRCULAR WAIT & ASCII GRAPH VISUALIZATION)\n");
+    printf("--------------------------------------------------------------------------------\n");
+    printf("Concept: Coffman's circular wait condition occurs when processes form a closed\n");
+    printf("cycle of dependency. DeadlockDoctor builds the Wait-For Graph (WFG) and executes\n");
+    printf("DFS cycle detection to identify the exact deadlocked process set.\n\n");
+
+    SystemManager sm3;
+    system_manager_init(&sm3);
+
+    printf("[Step 3.1] Creating Circular-Wait Scenario (2 Processes, 2 Mutex Resources)...\n");
+    system_manager_create_resource(&sm3, 1, "R1", 1);
+    system_manager_create_resource(&sm3, 2, "R2", 1);
+
+    system_manager_create_process(&sm3, 1, "P1");
+    system_manager_create_process(&sm3, 2, "P2");
+
+    system_manager_set_max(&sm3, "P1", "R1", 1);
+    system_manager_set_max(&sm3, "P1", "R2", 1);
+    system_manager_set_max(&sm3, "P2", "R1", 1);
+    system_manager_set_max(&sm3, "P2", "R2", 1);
+
+    printf("  * P1 acquires R1 (held)\n");
+    system_manager_request(&sm3, "P1", "R1", 1);
+
+    printf("  * P2 acquires R2 (held)\n");
+    system_manager_request(&sm3, "P2", "R2", 1);
+
+    printf("  * P1 requests R2 -> Blocked (held by P2)\n");
+    system_manager_request(&sm3, "P1", "R2", 1);
+
+    printf("  * P2 requests R1 -> Blocked (held by P1)\n");
+    system_manager_request(&sm3, "P2", "R1", 1);
+    printf("\n");
+
+    printf("[Step 3.2] Visualizing Resource Allocation Graph & Wait-For Graph:\n");
+    system_manager_show_graph(&sm3);
+
+    printf("[Step 3.3] Running Deadlock Detector (Wait-For Graph DFS Cycle Search):\n");
+    DeadlockReport report;
+    deadlock_report_init(&report);
+    bool detected = detector_run(&sm3.pm, &sm3.rm, &report);
+    detector_print_report(&report);
+
+    printf("  [Detector Verification]\n");
+    printf("  * Deadlock Flag     : %s\n", detected ? "TRUE (DEADLOCK DETECTED)" : "FALSE");
+    printf("  * Cycle Length      : %d\n", report.cycle_len);
+    printf("  * Deadlocked Set (%d): { ", report.deadlocked_count);
+    for (int i = 0; i < report.deadlocked_count; i++) {
+        printf("%s%s", report.deadlocked_names[i], (i == report.deadlocked_count - 1) ? "" : ", ");
+    }
+    printf(" }\n\n");
+    deadlock_report_cleanup(&report);
+
+    printf(">>> STAGE 3 COMPLETED: Circular wait and exact deadlocked set verified <<<\n\n");
+
+    /* ========================================================================
+     * STAGE 4: DEADLOCK RECOVERY
+     * ======================================================================== */
+    printf("--------------------------------------------------------------------------------\n");
+    printf("STAGE 4: DEADLOCK RECOVERY (VICTIM SELECTION, RESOURCE RECLAMATION & RESOLUTION)\n");
+    printf("--------------------------------------------------------------------------------\n");
+    printf("Concept: To break circular wait, DeadlockDoctor evaluates candidate recovery costs:\n");
+    printf("Cost = (Held Units * 2) + (Pending Requests * 1) + Priority.\n");
+    printf("The process with the lowest cost is chosen as victim, aborted, and its resources\n");
+    printf("are reclaimed to unblock remaining processes.\n\n");
+
+    printf("[Step 4.1] Setting process priorities for recovery cost evaluation...\n");
+    Process *p1 = process_find_by_id_or_name(&sm3.pm, "P1");
+    Process *p2 = process_find_by_id_or_name(&sm3.pm, "P2");
+    if (p1) process_set_priority(p1, 100); /* High priority: protect P1 */
+    if (p2) process_set_priority(p2, 1);   /* Low priority: candidate victim P2 */
+    printf("  -> Process 'P1' priority = 100 (protect)\n");
+    printf("  -> Process 'P2' priority = 1   (candidate)\n\n");
+
+    printf("[Step 4.2] Executing 10-Step Deadlock Recovery:\n");
+    bool recovered = recovery_run(&sm3);
+
+    printf("\n[Step 4.3] Post-Recovery Verification:\n");
+    printf("  * Recovery Status   : %s\n", recovered ? "SUCCESS (DEADLOCK RESOLVED)" : "FAILED");
+    if (p2) {
+        printf("  * Victim 'P2' State : %s\n", process_state_to_string(p2->state));
+    }
+    if (p1) {
+        printf("  * Surviving 'P1'    : %s (Acquired pending resource R2)\n", process_state_to_string(p1->state));
+    }
+
+    DeadlockReport post_report;
+    deadlock_report_init(&post_report);
+    detector_run(&sm3.pm, &sm3.rm, &post_report);
+    printf("  * Re-run Detector   : %s\n", post_report.deadlock_detected ? "DEADLOCK PERSISTS" : "NO DEADLOCK DETECTED (CYCLE BROKEN)");
+    deadlock_report_cleanup(&post_report);
+
+    system_manager_cleanup(&sm3);
+    printf("\n>>> STAGE 4 COMPLETED: Deadlock resolved and system returned to safe state <<<\n\n");
+
+    /* ========================================================================
+     * CONCLUSION
+     * ======================================================================== */
+    printf("================================================================================\n");
+    printf("                    DEMONSTRATION CONCLUSION & VIVA SUMMARY                     \n");
+    printf("================================================================================\n");
+    printf(" [1] RESOURCE MANAGEMENT : Registered resources & processes, allocated/released units.\n");
+    printf(" [2] BANKER'S ALGORITHM  : Validated safe sequence <P2 -> P1 -> P3> & blocked unsafe req.\n");
+    printf(" [3] DEADLOCK DETECTION  : DFS cycle search identified exact deadlocked set { P1, P2 }.\n");
+    printf(" [4] GRAPH THEORY        : Generated ASCII Resource Allocation Graph & Wait-For Graph.\n");
+    printf(" [5] DEADLOCK RECOVERY   : Aborted lowest-cost victim P2, unblocked P1 -> System safe.\n");
+    printf("================================================================================\n\n");
+}
+
 void system_manager_print_help(void) {
     printf("\n================================================================================\n");
     printf("                    DEADLOCKDOCTOR COMMAND REFERENCE (CLI)                      \n");
     printf("================================================================================\n\n");
     printf("  [SYSTEM STATUS & HELP]\n");
     printf("    help                               - Display this beginner-friendly command guide\n");
-    printf("    status                             - Display system matrices (Available, Alloc, Max, Need)\n\n");
+    printf("    status                             - Display system matrices (Available, Alloc, Max, Need)\n");
+    printf("    pwd                                - Print current working directory\n");
+    printf("    cd [path]                          - Change directory (~, .., /path, -)\n\n");
 
     printf("  [PROCESS MANAGEMENT]\n");
     printf("    process create <name> [id]         - Register a new process (e.g. process create P1)\n");
@@ -557,33 +1050,141 @@ void system_manager_print_help(void) {
     printf("    log                                - View persistent POSIX event log (logs/deadlockdoctor.log)\n\n");
 
     printf("  [DEMONSTRATIONS (VIVA REFERENCE)]\n");
-    printf("    demo [thread|fork|ipc]             - Run OS demonstrations (pthreads, fork/exec, IPC/signals)\n\n");
+    printf("    demo [all|thread|fork|ipc]         - Run OS demonstrations (all: complete viva demo)\n\n");
+
+    printf("  [EXTERNAL LINUX COMMANDS]\n");
+    printf("    <any Linux command>                - Execute external Ubuntu command (e.g. ls, cat, nano, gcc)\n\n");
 
     printf("  [EXIT]\n");
     printf("    exit | quit                        - Safely exit DeadlockDoctor\n");
     printf("================================================================================\n\n");
 }
 
+static const char *s_builtin_commands[] = {
+    "process", "resource", "request", "release", "banker", "detect",
+    "graph", "recover", "recover-auto", "status", "pwd", "cd", "demo",
+    "load", "log", "remove-res", "fork-demo", "process-demo",
+    "ipc", "ipc-demo", "help", "exit", "quit", NULL
+};
+
+static char *shell_command_generator(const char *text, int state) {
+    static int list_index, len;
+    const char *name;
+
+    if (!state) {
+        list_index = 0;
+        len = (int)strlen(text);
+    }
+
+    while ((name = s_builtin_commands[list_index++]) != NULL) {
+        if (strncasecmp(name, text, len) == 0) {
+            return strdup(name);
+        }
+    }
+
+    return NULL;
+}
+
+static char **shell_completion(const char *text, int start, int end) {
+    (void)end;
+    if (start == 0) {
+        return rl_completion_matches(text, shell_command_generator);
+    }
+    return NULL;
+}
+
+static char s_history_file[PATH_MAX] = "";
+
+static void setup_shell_history(void) {
+    rl_attempted_completion_function = shell_completion;
+    const char *home = getenv("HOME");
+    if (home && home[0] != '\0') {
+        snprintf(s_history_file, sizeof(s_history_file), "%s/.deadlockdoctor_history", home);
+        read_history(s_history_file);
+    }
+}
+
+static void save_shell_history(void) {
+    if (s_history_file[0] != '\0') {
+        write_history(s_history_file);
+        history_truncate_file(s_history_file, 1000);
+    }
+}
+
 void system_manager_run_cli(SystemManager *sm) {
     if (!sm) return;
 
+    setup_shell_history();
+
+    struct sigaction sa_int;
+    memset(&sa_int, 0, sizeof(sa_int));
+    sa_int.sa_handler = shell_sigint_handler;
+    sigaction(SIGINT, &sa_int, NULL);
+
     char line[MAX_CMD_LEN];
+    char token_buf[MAX_CMD_LEN * 2];
+    char *args[MAX_SHELL_ARGS];
+    char exit_buf[16];
     int is_interactive = isatty(STDIN_FILENO);
 
     while (sm->is_running) {
         if (is_interactive) {
-            printf("deadlockdoctor> ");
-            fflush(stdout);
+            char *raw = readline("deadlockdoctor> ");
+            if (!raw) {
+                if (s_shell_sigint) {
+                    s_shell_sigint = 0;
+                    printf("\n");
+                    continue;
+                }
+                /* End of file / Ctrl+D */
+                printf("\n");
+                break;
+            }
+
+            size_t raw_len = strlen(raw);
+            while (raw_len > 0 && (raw[raw_len - 1] == '\n' || raw[raw_len - 1] == '\r' || raw[raw_len - 1] == ' ')) {
+                raw[--raw_len] = '\0';
+            }
+
+            if (raw_len > 0) {
+                HIST_ENTRY *last = history_get(history_length);
+                if (!last || strcmp(last->line, raw) != 0) {
+                    add_history(raw);
+                    if (s_history_file[0] != '\0') {
+                        append_history(1, s_history_file);
+                    }
+                }
+            }
+
+            if (raw_len >= sizeof(line)) {
+                raw_len = sizeof(line) - 1;
+            }
+            memcpy(line, raw, raw_len);
+            line[raw_len] = '\0';
+            free(raw);
+        } else {
+            if (!fgets(line, sizeof(line), stdin)) {
+                if (feof(stdin)) {
+                    break; /* EOF */
+                }
+                if (s_shell_sigint) {
+                    s_shell_sigint = 0;
+                    clearerr(stdin);
+                    printf("\n");
+                    continue;
+                }
+                break;
+            }
+
+            size_t len = strlen(line);
+            while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' ')) {
+                line[--len] = 0;
+            }
         }
 
-        if (!fgets(line, sizeof(line), stdin)) {
-            break; /* EOF */
-        }
-
-        /* Strip trailing newlines and spaces */
         size_t len = strlen(line);
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' ')) {
-            line[--len] = '\0';
+            line[--len] = 0;
         }
 
         /* Skip empty or comment lines */
@@ -591,11 +1192,66 @@ void system_manager_run_cli(SystemManager *sm) {
             continue;
         }
 
-        char cmd[64];
-        int scanned = sscanf(line, "%63s", cmd);
-        if (scanned <= 0) continue;
+        int argc = parse_command_line(line, token_buf, sizeof(token_buf), args, MAX_SHELL_ARGS);
+        if (argc <= 0 || !args[0] || args[0][0] == 0) {
+            continue;
+        }
 
-        if (strcasecmp(cmd, "process") == 0 || strcasecmp(cmd, "proc") == 0) {
+        expand_exit_status(args, argc, exit_buf, sizeof(exit_buf), s_last_exit_status);
+
+        const char *cmd = args[0];
+
+        if (strcasecmp(cmd, "pwd") == 0) {
+            char cwd[PATH_MAX];
+            if (getcwd(cwd, sizeof(cwd)) != NULL) {
+                printf("%s\n", cwd);
+                s_last_exit_status = 0;
+            } else {
+                perror("pwd");
+                s_last_exit_status = 1;
+            }
+        } else if (strcasecmp(cmd, "cd") == 0) {
+            const char *target = NULL;
+            char path_buf[PATH_MAX];
+
+            if (argc < 2 || args[1] == NULL || strlen(args[1]) == 0 || strcmp(args[1], "~") == 0) {
+                target = getenv("HOME");
+                if (!target) {
+                    target = "/";
+                }
+            } else if (strncmp(args[1], "~/", 2) == 0) {
+                const char *home = getenv("HOME");
+                if (!home) home = "";
+                snprintf(path_buf, sizeof(path_buf), "%s/%s", home, args[1] + 2);
+                target = path_buf;
+            } else if (strcmp(args[1], "-") == 0) {
+                if (s_old_pwd[0] == 0) {
+                    fprintf(stderr, "cd: OLDPWD not set\n");
+                    s_last_exit_status = 1;
+                    target = NULL;
+                } else {
+                    target = s_old_pwd;
+                    printf("%s\n", target);
+                }
+            } else {
+                target = args[1];
+            }
+
+            if (target) {
+                char current_cwd[PATH_MAX];
+                char *got_cwd = getcwd(current_cwd, sizeof(current_cwd));
+                if (chdir(target) != 0) {
+                    fprintf(stderr, "cd: %s: %s\n", target, strerror(errno));
+                    s_last_exit_status = 1;
+                } else {
+                    if (got_cwd) {
+                        strncpy(s_old_pwd, current_cwd, sizeof(s_old_pwd) - 1);
+                        s_old_pwd[sizeof(s_old_pwd) - 1] = 0;
+                    }
+                    s_last_exit_status = 0;
+                }
+            }
+        } else if (strcasecmp(cmd, "process") == 0 || strcasecmp(cmd, "proc") == 0) {
             char sub[64] = "";
             int sub_count = sscanf(line, "%*s %63s", sub);
             if (sub_count < 1) {
@@ -788,13 +1444,14 @@ void system_manager_run_cli(SystemManager *sm) {
                     system_manager_run_process_demo();
                 } else if (strcasecmp(demo_type, "ipc") == 0) {
                     system_manager_run_ipc_demo(sm);
+                } else if (strcasecmp(demo_type, "all") == 0 || strcasecmp(demo_type, "full") == 0 ||
+                           strcasecmp(demo_type, "viva") == 0) {
+                    system_manager_run_full_demo();
                 } else {
-                    printf("[Error] Unknown demo '%s'. Available demos: demo thread, demo fork, demo ipc\n", demo_type);
+                    printf("[Error] Unknown demo '%s'. Available demos: demo [all|thread|fork|ipc]\n", demo_type);
                 }
             } else {
-                printf("\n[Running default POSIX threads deadlock demonstration]\n");
-                system_manager_run_thread_demo();
-                printf("[Demo Options available: demo thread, demo fork, demo ipc]\n\n");
+                system_manager_run_full_demo();
             }
         } else if (strcasecmp(cmd, "priority") == 0 || strcasecmp(cmd, "set-priority") == 0) {
             char pname[MAX_NAME_LEN];
@@ -869,6 +1526,31 @@ void system_manager_run_cli(SystemManager *sm) {
             } else {
                 printf("[Error] Usage: remove-res <id>\n");
             }
+        } else if (strcasecmp(cmd, "strategy") == 0) {
+            if (argc > 1) {
+                if (strcasecmp(args[1], "compare") == 0) {
+                    system_manager_print_strategy_comparison();
+                } else if (strcasecmp(args[1], "ordered") == 0 || strcasecmp(args[1], "ordering") == 0) {
+                    system_manager_set_strategy(sm, STRATEGY_RESOURCE_ORDERING);
+                    printf("[OK] Active strategy set to: Resource Ordering (Prevention)\n");
+                } else if (strcasecmp(args[1], "atomic") == 0 || strcasecmp(args[1], "all-or-nothing") == 0) {
+                    system_manager_set_strategy(sm, STRATEGY_ALL_OR_NOTHING);
+                    printf("[OK] Active strategy set to: All-or-Nothing (Hold-and-Wait Prevention)\n");
+                } else if (strcasecmp(args[1], "banker") == 0 || strcasecmp(args[1], "avoidance") == 0) {
+                    system_manager_set_strategy(sm, STRATEGY_BANKER_AVOIDANCE);
+                    printf("[OK] Active strategy set to: Banker's Avoidance Algorithm\n");
+                } else if (strcasecmp(args[1], "detect") == 0 || strcasecmp(args[1], "recovery") == 0) {
+                    system_manager_set_strategy(sm, STRATEGY_DETECTION_RECOVERY);
+                    printf("[OK] Active strategy set to: Deadlock Detection & Recovery\n");
+                } else {
+                    printf("Usage: strategy [detect | ordered | atomic | banker | compare]\n");
+                }
+            } else {
+                printf("Current deadlock management strategy: %s\n", system_manager_get_strategy_name(sm->strategy));
+                printf("Use 'strategy compare' to view comparative trade-offs.\n");
+            }
+        } else if (strcasecmp(cmd, "benchmark") == 0) {
+            benchmark_run_suite();
         } else if (strcasecmp(cmd, "fork-demo") == 0 || strcasecmp(cmd, "process-demo") == 0) {
             system_manager_run_process_demo();
         } else if (strcasecmp(cmd, "ipc") == 0 || strcasecmp(cmd, "ipc-demo") == 0) {
@@ -881,7 +1563,10 @@ void system_manager_run_cli(SystemManager *sm) {
             sm->is_running = false;
             printf("Exiting DeadlockDoctor. Goodbye!\n");
         } else {
-            printf("[Error] Unknown command: '%s'. Type 'help' for available commands.\n", cmd);
+            s_last_exit_status = execute_external_command(args);
         }
     }
+
+    save_shell_history();
+    clear_history();
 }

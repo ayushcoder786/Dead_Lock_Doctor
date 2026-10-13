@@ -1,0 +1,5 @@
+build/
+deadlockdoctor
+logs/*.log
+*.o
+.deadlockdoctor_history

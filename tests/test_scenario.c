@@ -158,6 +158,124 @@ static void test_recovery_on_deadlock_scenario(void) {
     printf("[PASS] Test 5 Passed: 10-step Deadlock recovery verified.\n\n");
 }
 
+
+static void test_presentation_demo_verification(void) {
+    printf("[RUNNING] Test 6: Presentation Demo Complete Stages Verification\n");
+
+    /* 1. Verify Stage 1 & 2: Safe state and Banker validation */
+    SystemManager sm_safe;
+    system_manager_init(&sm_safe);
+    assert(scenario_replay_file(&sm_safe, "scenarios/safe.txt") == true);
+
+    BankerSystem bs;
+    banker_system_init(&bs);
+    assert(banker_init_from_manager(&bs, &sm_safe.pm, &sm_safe.rm) == true);
+    int safe_seq[MAX_PROCESSES];
+    int seq_len = 0;
+    bool is_safe = banker_is_safe(&bs, safe_seq, &seq_len);
+    assert(is_safe == true);
+    assert(seq_len == 3);
+    /* Safe sequence must be P2 -> P1 -> P3 */
+    assert(strcmp(bs.process_names[safe_seq[0]], "P2") == 0);
+    assert(strcmp(bs.process_names[safe_seq[1]], "P1") == 0);
+    assert(strcmp(bs.process_names[safe_seq[2]], "P3") == 0);
+    banker_system_cleanup(&bs);
+    system_manager_cleanup(&sm_safe);
+
+    /* 2. Verify Stage 2: Unsafe state and Avoidance blocking */
+    SystemManager sm_unsafe;
+    system_manager_init(&sm_unsafe);
+    assert(scenario_replay_file(&sm_unsafe, "scenarios/unsafe.txt") == true);
+    banker_system_init(&bs);
+    assert(banker_init_from_manager(&bs, &sm_unsafe.pm, &sm_unsafe.rm) == true);
+    assert(banker_is_safe(&bs, safe_seq, &seq_len) == false);
+    banker_system_cleanup(&bs);
+    system_manager_cleanup(&sm_unsafe);
+
+    /* 3. Verify Stage 3 & 4: Exact deadlocked set and recovery */
+    SystemManager sm_deadlock;
+    system_manager_init(&sm_deadlock);
+    assert(scenario_replay_file(&sm_deadlock, "scenarios/deadlock.txt") == true);
+
+    DeadlockReport report;
+    deadlock_report_init(&report);
+    assert(detector_run(&sm_deadlock.pm, &sm_deadlock.rm, &report) == true);
+    assert(report.deadlock_detected == true);
+    assert(report.deadlocked_count == 2);
+    /* Exact deadlocked set verification */
+    bool has_p1 = false, has_p2 = false;
+    for (int i = 0; i < report.deadlocked_count; i++) {
+        if (strcmp(report.deadlocked_names[i], "P1") == 0) has_p1 = true;
+        if (strcmp(report.deadlocked_names[i], "P2") == 0) has_p2 = true;
+    }
+    assert(has_p1 == true && has_p2 == true);
+    deadlock_report_cleanup(&report);
+
+    /* Test prioritized victim selection and recovery */
+    Process *p1 = process_find_by_id_or_name(&sm_deadlock.pm, "P1");
+    Process *p2 = process_find_by_id_or_name(&sm_deadlock.pm, "P2");
+    assert(p1 != NULL && p2 != NULL);
+    process_set_priority(p1, 100);
+    process_set_priority(p2, 1);
+
+    bool recovered = recovery_run(&sm_deadlock);
+    assert(recovered == true);
+    assert(p2->state == PROCESS_STATE_ABORTED);
+    assert(p1->state != PROCESS_STATE_BLOCKED);
+
+    deadlock_report_init(&report);
+    detector_run(&sm_deadlock.pm, &sm_deadlock.rm, &report);
+    assert(report.deadlock_detected == false);
+    deadlock_report_cleanup(&report);
+    system_manager_cleanup(&sm_deadlock);
+
+    /* 4. Verify system_manager_run_full_demo executes cleanly */
+    system_manager_run_full_demo();
+
+    printf("[PASS] Test 6 Passed: Complete presentation demo stages verified.\n\n");
+}
+
+
+static void test_replay_multi_instance_scenario(void) {
+    printf("[RUNNING] Test 7: Replay scenarios/multi_instance.txt\n");
+    SystemManager sm;
+    system_manager_init(&sm);
+
+    bool ok = scenario_replay_file(&sm, "scenarios/multi_instance.txt");
+    assert(ok == true);
+    assert(sm.pm.count == 3);
+    assert(sm.rm.count == 3);
+
+    system_manager_cleanup(&sm);
+    printf("[PASS] Test 7 Passed: Multi-instance scenario verified.\n\n");
+}
+
+static void test_replay_prevention_ordered_scenario(void) {
+    printf("[RUNNING] Test 8: Replay scenarios/prevention_ordered.txt\n");
+    SystemManager sm;
+    system_manager_init(&sm);
+
+    bool ok = scenario_replay_file(&sm, "scenarios/prevention_ordered.txt");
+    assert(ok == true);
+    assert(sm.strategy == STRATEGY_RESOURCE_ORDERING);
+
+    system_manager_cleanup(&sm);
+    printf("[PASS] Test 8 Passed: Prevention ordered scenario verified.\n\n");
+}
+
+static void test_replay_stress_scenario(void) {
+    printf("[RUNNING] Test 9: Replay scenarios/stress.txt\n");
+    SystemManager sm;
+    system_manager_init(&sm);
+
+    bool ok = scenario_replay_file(&sm, "scenarios/stress.txt");
+    assert(ok == true);
+    assert(sm.pm.count == 5);
+    assert(sm.rm.count == 4);
+
+    system_manager_cleanup(&sm);
+    printf("[PASS] Test 9 Passed: Stress scenario verified.\n\n");
+}
 int main(void) {
     printf("==========================================\n");
     printf("  DEADLOCKDOCTOR SCENARIO REPLAY TESTS   \n");
@@ -168,6 +286,10 @@ int main(void) {
     test_replay_unsafe_scenario();
     test_parser_error_handling();
     test_recovery_on_deadlock_scenario();
+    test_presentation_demo_verification();
+    test_replay_multi_instance_scenario();
+    test_replay_prevention_ordered_scenario();
+    test_replay_stress_scenario();
 
     printf("==========================================\n");
     printf("  ALL SCENARIO TEST CASES PASSED          \n");

@@ -297,10 +297,47 @@ bool banker_check_request_safety(const BankerSystem *bs,
     return is_safe;
 }
 
+void banker_print_matrices(const BankerSystem *bs) {
+    if (!bs) return;
+
+    printf("\n+---------+--------------------+-------------------------+-------------------------+-------------------------+\n");
+    printf("| PID     | Process Name       | Allocation              | Max Claim               | Need (Max - Alloc)      |\n");
+    printf("+---------+--------------------+-------------------------+-------------------------+-------------------------+\n");
+
+    for (int i = 0; i < bs->num_processes; i++) {
+        char alloc_str[256] = "";
+        char max_str[256] = "";
+        char need_str[256] = "";
+
+        for (int j = 0; j < bs->num_resources; j++) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%s:%d ", bs->resource_names[j], bs->allocation[i][j]);
+            strncat(alloc_str, buf, sizeof(alloc_str) - strlen(alloc_str) - 1);
+
+            snprintf(buf, sizeof(buf), "%s:%d ", bs->resource_names[j], bs->max[i][j]);
+            strncat(max_str, buf, sizeof(max_str) - strlen(max_str) - 1);
+
+            snprintf(buf, sizeof(buf), "%s:%d ", bs->resource_names[j], bs->need[i][j]);
+            strncat(need_str, buf, sizeof(need_str) - strlen(need_str) - 1);
+        }
+
+        printf("| %-7d | %-18s | %-23s | %-23s | %-23s |\n",
+               bs->process_ids[i], bs->process_names[i], alloc_str, max_str, need_str);
+    }
+    printf("+---------+--------------------+-------------------------+-------------------------+-------------------------+\n\n");
+}
+
 void banker_print_safety_report(const BankerSystem *bs) {
     if (!bs) return;
 
-    printf("\nBANKER SAFETY CHECK\n\n");
+    printf("\n================================================================================\n");
+    printf("                    BANKER'S ALGORITHM SAFETY EVALUATION                        \n");
+    printf("================================================================================\n");
+
+    printf("\n[BANKER RESOURCE MATRICES]\n");
+    banker_print_matrices(bs);
+
+    printf("BANKER SAFETY CHECK\n\n");
     printf("Available:\n");
     for (int j = 0; j < bs->num_resources; j++) {
         printf("%s%s", bs->resource_names[j], (j == bs->num_resources - 1) ? "\n" : " ");
@@ -318,26 +355,106 @@ void banker_print_safety_report(const BankerSystem *bs) {
     int *safe_seq = (int *)malloc(bs->num_processes * sizeof(int));
     if (!safe_seq) return;
     int seq_len = 0;
-    bool safe = banker_is_safe(bs, safe_seq, &seq_len);
+
+    /* Step-by-step trace simulation */
+    int *work = (int *)malloc(bs->num_resources * sizeof(int));
+    bool *finish = (bool *)calloc(bs->num_processes, sizeof(bool));
+    for (int j = 0; j < bs->num_resources; j++) {
+        work[j] = bs->available[j];
+    }
+
+    printf("[SAFETY ALGORITHM STEP-BY-STEP TRACE]\n");
+    int step = 1;
+    bool safe = true;
+
+    while (seq_len < bs->num_processes) {
+        bool found = false;
+        for (int i = 0; i < bs->num_processes; i++) {
+            if (!finish[i]) {
+                bool can_satisfy = true;
+                for (int j = 0; j < bs->num_resources; j++) {
+                    if (bs->need[i][j] > work[j]) {
+                        can_satisfy = false;
+                        break;
+                    }
+                }
+
+                if (can_satisfy) {
+                    printf("  Step %d: Process '%s' (PID %d) Need [ ", step++, bs->process_names[i], bs->process_ids[i]);
+                    for (int j = 0; j < bs->num_resources; j++) {
+                        printf("%s:%d%s", bs->resource_names[j], bs->need[i][j], (j == bs->num_resources - 1) ? "" : " ");
+                    }
+                    printf(" ] <= Work [ ");
+                    for (int j = 0; j < bs->num_resources; j++) {
+                        printf("%s:%d%s", bs->resource_names[j], work[j], (j == bs->num_resources - 1) ? "" : " ");
+                    }
+                    printf(" ]\n");
+
+                    for (int j = 0; j < bs->num_resources; j++) {
+                        work[j] += bs->allocation[i][j];
+                    }
+
+                    printf("          -> '%s' finishes and releases held resources. New Work = [ ", bs->process_names[i]);
+                    for (int j = 0; j < bs->num_resources; j++) {
+                        printf("%s:%d%s", bs->resource_names[j], work[j], (j == bs->num_resources - 1) ? "" : " ");
+                    }
+                    printf(" ]\n");
+
+                    safe_seq[seq_len++] = i;
+                    finish[i] = true;
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        if (!found) {
+            safe = false;
+            printf("  Unsafe Step %d: No remaining unfinished process can be satisfied by current Work vector [ ", step);
+            for (int j = 0; j < bs->num_resources; j++) {
+                printf("%s:%d%s", bs->resource_names[j], work[j], (j == bs->num_resources - 1) ? "" : " ");
+            }
+            printf(" ]\n");
+
+            printf("  [Unsatisfied Process Constraints]:\n");
+            for (int i = 0; i < bs->num_processes; i++) {
+                if (!finish[i]) {
+                    printf("    * '%s' needs [ ", bs->process_names[i]);
+                    for (int j = 0; j < bs->num_resources; j++) {
+                        printf("%s:%d%s", bs->resource_names[j], bs->need[i][j], (j == bs->num_resources - 1) ? "" : " ");
+                    }
+                    printf(" ] exceeding available Work\n");
+                }
+            }
+            break;
+        }
+    }
+
+    printf("\n");
 
     if (safe) {
         printf("Safe sequence:\n");
         char seq_buf[256] = "";
         for (int i = 0; i < seq_len; i++) {
             int p_idx = safe_seq[i];
-            printf("%s%s", bs->process_names[p_idx], (i == seq_len - 1) ? "" : " -> ");
+            printf("%s%s", bs->process_names[p_idx], (i == seq_len - 1) ? "\n" : " -> ");
             strncat(seq_buf, bs->process_names[p_idx], sizeof(seq_buf) - strlen(seq_buf) - 1);
             if (i < seq_len - 1) {
                 strncat(seq_buf, " -> ", sizeof(seq_buf) - strlen(seq_buf) - 1);
             }
         }
-        printf("\n\nSYSTEM STATE: SAFE\n\n");
+        printf("\nSYSTEM STATE: SAFE\n\n");
         logger_log(LOG_BANKER_RESULT, "Banker safety check: SYSTEM STATE: SAFE. Safe sequence: %s.", seq_buf);
     } else {
         printf("SYSTEM STATE: UNSAFE\n");
         printf("Request BLOCKED\n\n");
+        printf("[EXPLANATION OF UNSAFE STATE]\n");
+        printf("  The system cannot guarantee that all processes can finish without risk of circular wait.\n");
+        printf("  An unsafe state is NOT necessarily a deadlock, but deadlock could occur if processes request their maximum claims.\n\n");
         logger_log(LOG_BANKER_RESULT, "Banker safety check: SYSTEM STATE: UNSAFE. No safe sequence found.");
     }
 
+    free(work);
+    free(finish);
     free(safe_seq);
 }

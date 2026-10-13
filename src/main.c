@@ -4,6 +4,7 @@
 #include "logger.h"
 #include "process_demo.h"
 #include "ipc.h"
+#include "benchmark.h"
 
 int main(int argc, char *argv[]) {
     if (argc > 1) {
@@ -22,6 +23,22 @@ int main(int argc, char *argv[]) {
         if (strcmp(argv[1], "--ipc-demo") == 0 || strcmp(argv[1], "-i") == 0) {
             bool ok = ipc_demo_run_all(NULL);
             return ok ? 0 : 1;
+        }
+        if (strcmp(argv[1], "--benchmark") == 0 || strcmp(argv[1], "-b") == 0) {
+            benchmark_run_suite();
+            return 0;
+        }
+        if (strcmp(argv[1], "--strategy-compare") == 0 || strcmp(argv[1], "-sc") == 0) {
+            system_manager_print_strategy_comparison();
+            return 0;
+        }
+        if (strcmp(argv[1], "--demo") == 0 || strcmp(argv[1], "-d") == 0) {
+            system_manager_run_full_demo();
+            return 0;
+        }
+        if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+            system_manager_print_help();
+            return 0;
         }
     }
 

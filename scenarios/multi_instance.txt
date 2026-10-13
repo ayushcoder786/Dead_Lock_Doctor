@@ -1,0 +1,45 @@
+# ==============================================================================
+# Scenario: Multiple-Instance Resource Deadlock Detection
+# Demonstrates:
+#   1. R1 has 2 instances, R2 has 1 instance, R3 has 2 instances.
+#   2. Cycle in graph does NOT imply deadlock when a process can complete.
+#   3. True multi-instance deadlock detection via Work/Finish vector reduction.
+# ==============================================================================
+
+PROCESS P1
+PROCESS P2
+PROCESS P3
+
+RESOURCE R1 2
+RESOURCE R2 1
+RESOURCE R3 2
+
+MAX P1 R1 2
+MAX P1 R2 1
+MAX P1 R3 1
+
+MAX P2 R1 1
+MAX P2 R2 1
+MAX P2 R3 2
+
+MAX P3 R1 2
+MAX P3 R2 0
+MAX P3 R3 2
+
+# Initial Allocations
+REQUEST P1 R1 1
+REQUEST P2 R2 1
+REQUEST P3 R1 1
+REQUEST P3 R3 1
+
+# P1 and P2 request further resources
+REQUEST P1 R2 1
+REQUEST P2 R3 1
+
+# View Graph & Run Detection: P3 is unblocked, so NO DEADLOCK occurs!
+GRAPH
+DETECT
+
+# P3 now also requests R1 (held), closing circular wait across all instances
+REQUEST P3 R1 1
+DETECT

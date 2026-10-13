@@ -1,8 +1,12 @@
 #ifndef DEADLOCKDOCTOR_COMMON_H
 #define DEADLOCKDOCTOR_COMMON_H
 
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +21,7 @@
 #define MAX_PROCESSES 32
 #define MAX_RESOURCES 32
 #define MAX_NAME_LEN  64
-#define MAX_CMD_LEN   256
+#define MAX_CMD_LEN   1024
 
 typedef enum {
     PROCESS_STATE_READY,

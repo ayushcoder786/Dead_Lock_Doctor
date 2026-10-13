@@ -183,6 +183,29 @@ bool scenario_execute_line(SystemManager *sm, const char *line, int step_num) {
         }
         fprintf(stderr, "[Scenario Error] Step %d: Usage: PRIORITY <proc> <val>\n", step_num);
         return false;
+    } else if (strcasecmp(cmd, "STRATEGY") == 0) {
+        char opt[32] = "";
+        if (sscanf(line, "%*s %31s", opt) == 1) {
+            if (strcasecmp(opt, "ORDERED") == 0 || strcasecmp(opt, "ORDERING") == 0) {
+                system_manager_set_strategy(sm, STRATEGY_RESOURCE_ORDERING);
+            } else if (strcasecmp(opt, "ATOMIC") == 0 || strcasecmp(opt, "ALL-OR-NOTHING") == 0) {
+                system_manager_set_strategy(sm, STRATEGY_ALL_OR_NOTHING);
+            } else if (strcasecmp(opt, "BANKER") == 0 || strcasecmp(opt, "AVOIDANCE") == 0) {
+                system_manager_set_strategy(sm, STRATEGY_BANKER_AVOIDANCE);
+            } else if (strcasecmp(opt, "DETECT") == 0 || strcasecmp(opt, "RECOVERY") == 0) {
+                system_manager_set_strategy(sm, STRATEGY_DETECTION_RECOVERY);
+            } else if (strcasecmp(opt, "COMPARE") == 0) {
+                system_manager_print_strategy_comparison();
+            } else {
+                fprintf(stderr, "[Scenario Error] Step %d: Usage: STRATEGY <ORDERED|ATOMIC|BANKER|DETECT|COMPARE>\n", step_num);
+                return false;
+            }
+            printf("[OK] Active strategy set to: %s\n", system_manager_get_strategy_name(sm->strategy));
+            return true;
+        } else {
+            fprintf(stderr, "[Scenario Error] Step %d: Usage: STRATEGY <ORDERED|ATOMIC|BANKER|DETECT|COMPARE>\n", step_num);
+            return false;
+        }
     } else if (strcasecmp(cmd, "BANKER-MODE") == 0 || strcasecmp(cmd, "MODE") == 0) {
         char opt[32] = "";
         if (sscanf(line, "%*s %31s", opt) == 1) {

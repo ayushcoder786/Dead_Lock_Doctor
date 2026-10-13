@@ -1,0 +1,37 @@
+# ==============================================================================
+# Scenario: Deadlock Prevention via Global Resource Ordering (Havender's Rule)
+# Demonstrates:
+#   1. Enforcing global resource ordering: R1 < R2 < R3.
+#   2. Valid ascending requests are permitted.
+#   3. Out-of-order request is rejected, preventing circular wait.
+# ==============================================================================
+
+STRATEGY ORDERED
+
+PROCESS P1
+PROCESS P2
+
+RESOURCE R1 2
+RESOURCE R2 2
+RESOURCE R3 2
+
+MAX P1 R1 1
+MAX P1 R2 1
+MAX P1 R3 1
+
+MAX P2 R1 1
+MAX P2 R2 1
+MAX P2 R3 1
+
+# P1 acquires R1 then R2 (Ascending order allowed)
+REQUEST P1 R1 1
+REQUEST P1 R2 1
+
+# P2 acquires R2
+REQUEST P2 R2 1
+
+# P2 attempts out-of-order request for R1 while holding R2 -> REJECTED!
+REQUEST P2 R1 1
+
+STATUS
+DETECT

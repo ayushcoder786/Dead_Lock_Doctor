@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -std=c11 -Wall -Wextra -Iinclude
-LDFLAGS ?= -pthread
+LDFLAGS ?= -pthread -lreadline
 
 TARGET = deadlockdoctor
 SRC_DIR = src
@@ -29,7 +29,8 @@ SRCS = $(SRC_DIR)/main.c \
        $(SRC_DIR)/graph.c \
        $(SRC_DIR)/ipc.c \
        $(SRC_DIR)/logger.c \
-       $(SRC_DIR)/process_demo.c
+       $(SRC_DIR)/process_demo.c \
+       $(SRC_DIR)/benchmark.c
 
 OBJS = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
@@ -57,7 +58,8 @@ TEST_SCENARIO_OBJS = $(OBJ_DIR)/test_scenario.o \
                      $(OBJ_DIR)/recovery.o \
                      $(OBJ_DIR)/logger.o \
                      $(OBJ_DIR)/process_demo.o \
-                     $(OBJ_DIR)/ipc.o
+                     $(OBJ_DIR)/ipc.o \
+                     $(OBJ_DIR)/benchmark.o
 
 TEST_LOGGER_OBJS = $(OBJ_DIR)/test_logger.o \
                    $(OBJ_DIR)/logger.o
@@ -84,7 +86,8 @@ TEST_IPC_OBJS = $(OBJ_DIR)/test_ipc.o \
                 $(OBJ_DIR)/recovery.o \
                 $(OBJ_DIR)/scenario.o \
                 $(OBJ_DIR)/logger.o \
-                $(OBJ_DIR)/process_demo.o
+                $(OBJ_DIR)/process_demo.o \
+                     $(OBJ_DIR)/benchmark.o
 
 TEST_RECOVERY_OBJS = $(OBJ_DIR)/test_recovery.o \
                      $(OBJ_DIR)/recovery.o \
@@ -97,7 +100,8 @@ TEST_RECOVERY_OBJS = $(OBJ_DIR)/test_recovery.o \
                      $(OBJ_DIR)/scenario.o \
                      $(OBJ_DIR)/logger.o \
                      $(OBJ_DIR)/process_demo.o \
-                     $(OBJ_DIR)/ipc.o
+                     $(OBJ_DIR)/ipc.o \
+                     $(OBJ_DIR)/benchmark.o
 
 .PHONY: all clean run test test_banker test_detector test_scenario test_logger test_process_demo test_graph test_ipc test_recovery test_thread_deadlock thread_demo asan test_asan valgrind
 
@@ -205,3 +209,6 @@ run: $(TARGET)
 
 clean:
 	rm -rf $(OBJ_DIR) $(TARGET)
+
+benchmark: $(TARGET)
+	./$(TARGET) --benchmark

@@ -310,7 +310,12 @@ void graph_visualize(const ProcessManager *pm, const ResourceManager *rm) {
     printf("\n");
 
     /* 2. Resource Allocation Graph (RAG) */
-    printf("RESOURCE ALLOCATION GRAPH\n\n");
+    printf("RESOURCE ALLOCATION GRAPH (RAG)\n\n");
+    printf("+--------------------------------------------------------------+\n");
+    printf("| RAG LEGEND:                                                  |\n");
+    printf("|   P --holds--> R  : Allocation edge (Resource assigned to P) |\n");
+    printf("|   P ..waits..> R  : Request edge (Process blocked on R)      |\n");
+    printf("+--------------------------------------------------------------+\n");
 
     bool has_rag_edges = false;
 
@@ -335,7 +340,7 @@ void graph_visualize(const ProcessManager *pm, const ResourceManager *rm) {
         }
     }
 
-    /* Print Request Edges: Process --waits--> Resource */
+    /* Print Request Edges: Process ..waits..> Resource */
     for (int i = 0; i < pm->count; i++) {
         const Process *proc = pm->processes[i];
         if (!proc) continue;
@@ -348,9 +353,9 @@ void graph_visualize(const ProcessManager *pm, const ResourceManager *rm) {
             if (req_val > 0) {
                 has_rag_edges = true;
                 if (req_val == 1) {
-                    printf("%s --waits--> %s\n", proc->name, rm->resources[r].name);
+                    printf("%s ..waits..> %s\n", proc->name, rm->resources[r].name);
                 } else {
-                    printf("%s --waits (%d units)--> %s\n", proc->name, req_val, rm->resources[r].name);
+                    printf("%s ..waits (%d units)..> %s\n", proc->name, req_val, rm->resources[r].name);
                 }
             }
         }
@@ -362,18 +367,42 @@ void graph_visualize(const ProcessManager *pm, const ResourceManager *rm) {
     printf("\n");
 
     /* 3. Wait-For Graph (WFG) */
-    printf("WAIT-FOR GRAPH\n\n");
+    printf("WAIT-FOR GRAPH (WFG)\n\n");
+    printf("+--------------------------------------------------------------+\n");
+    printf("| WFG LEGEND:                                                  |\n");
+    printf("|   Pi -> Pj   : Normal dependency edge (Pi waits on Pj's R)   |\n");
+    printf("|   Pi ==> Pj  : Highlighted deadlocked cycle dependency edge  |\n");
+    printf("+--------------------------------------------------------------+\n");
 
     WaitForGraph wfg;
     wfg_init(&wfg);
     wfg_build_from_system(&wfg, pm, rm);
+
+    int cycle[MAX_PROCESSES];
+    int cycle_len = 0;
+    bool has_cycle = wfg_find_cycle_dfs(&wfg, cycle, &cycle_len);
 
     bool has_wfg_edges = false;
     for (int i = 0; i < wfg.num_nodes; i++) {
         for (int j = 0; j < wfg.num_nodes; j++) {
             if (wfg.adj[i][j]) {
                 has_wfg_edges = true;
-                printf("%s -> %s\n", wfg.node_names[i], wfg.node_names[j]);
+                /* Check if edge (i, j) is part of detected cycle */
+                bool is_cycle_edge = false;
+                if (has_cycle) {
+                    for (int k = 0; k < cycle_len - 1; k++) {
+                        if (cycle[k] == i && cycle[k + 1] == j) {
+                            is_cycle_edge = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (is_cycle_edge) {
+                    printf("%s ==> %s (DEADLOCK CYCLE EDGE)\n", wfg.node_names[i], wfg.node_names[j]);
+                } else {
+                    printf("%s -> %s\n", wfg.node_names[i], wfg.node_names[j]);
+                }
             }
         }
     }
@@ -383,14 +412,21 @@ void graph_visualize(const ProcessManager *pm, const ResourceManager *rm) {
     }
     printf("\n");
 
+    if (has_cycle && cycle_len > 0) {
+        printf("[DETECTED DEADLOCK CYCLE IN GRAPH]\n  ");
+        for (int k = 0; k < cycle_len; k++) {
+            printf("%s%s", wfg.node_names[cycle[k]], (k == cycle_len - 1) ? "\n\n" : " ==> ");
+        }
+    }
+
     /* 4. Viva / Demo Reference */
     printf("[GRAPH SEMANTICS (VIVA REFERENCE)]\n");
     printf("  * Resource Allocation Graph (RAG) is bipartite: Processes <-> Resources.\n");
     printf("    - P --holds--> R  : Allocation edge (Resource assigned to Process)\n");
-    printf("    - P --waits--> R  : Request edge (Process blocked awaiting Resource)\n");
+    printf("    - P ..waits..> R  : Request edge (Process blocked awaiting Resource)\n");
     printf("  * Wait-For Graph (WFG) is process-only (collapsed from RAG).\n");
     printf("    - Pi -> Pj        : Pi is waiting on a resource held by Pj\n");
-    printf("    - Directed Cycle  : Indicates circular wait (Deadlock condition)\n");
+    printf("    - Pi ==> Pj       : Highlighted circular wait cycle indicating deadlock.\n");
     printf("==============================================================\n\n");
 
     wfg_cleanup(&wfg);

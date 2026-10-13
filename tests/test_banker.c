@@ -176,6 +176,87 @@ static void test_unsafe_request(void) {
     printf("[PASS] Test 4 Passed.\n\n");
 }
 
+
+static void test_invalid_request_vector(void) {
+    printf("[RUNNING] Test 5: Invalid request vectors (Request > Need and Request > Available)\n");
+    BankerSystem bs;
+    setup_classic_banker_system(&bs);
+
+    /* P1 max is [3, 2, 2], allocation is [2, 0, 0], need is [1, 2, 2].
+     * If P1 requests [2, 0, 0], that exceeds its Need for R0 (1).
+     */
+    int *req_exceed_need = (int *)calloc(bs.num_resources, sizeof(int));
+    req_exceed_need[0] = 2; /* > need[1][0] which is 1 */
+    req_exceed_need[1] = 0;
+    req_exceed_need[2] = 0;
+
+    int safe_seq[5];
+    int seq_len = 0;
+    bool res1 = banker_check_request_safety(&bs, 1, req_exceed_need, NULL, safe_seq, &seq_len);
+    assert(res1 == false);
+
+    /* Available is [3, 3, 2].
+     * If P0 (need [7, 4, 3]) requests [4, 0, 0], request exceeds Available R0 (3).
+     */
+    int *req_exceed_avail = (int *)calloc(bs.num_resources, sizeof(int));
+    req_exceed_avail[0] = 4; /* > available[0] which is 3 */
+    req_exceed_avail[1] = 0;
+    req_exceed_avail[2] = 0;
+
+    bool res2 = banker_check_request_safety(&bs, 0, req_exceed_avail, NULL, safe_seq, &seq_len);
+    assert(res2 == false);
+
+    free(req_exceed_need);
+    free(req_exceed_avail);
+    banker_system_cleanup(&bs);
+    printf("[PASS] Test 5 Passed: Invalid request vectors correctly rejected.\n\n");
+}
+
+static void test_need_invariant_and_restoration(void) {
+    printf("[RUNNING] Test 6: Need matrix invariant Need[i][j] = Max[i][j] - Allocation[i][j]\n");
+    BankerSystem bs;
+    setup_classic_banker_system(&bs);
+
+    for (int i = 0; i < bs.num_processes; i++) {
+        for (int j = 0; j < bs.num_resources; j++) {
+            assert(bs.need[i][j] == bs.max[i][j] - bs.allocation[i][j]);
+            assert(bs.need[i][j] >= 0);
+        }
+    }
+
+    /* Test snapshot restoration */
+    BankerSystem snapshot;
+    banker_system_init(&snapshot);
+    banker_system_copy(&snapshot, &bs);
+
+    /* Attempt an unsafe request */
+    int *unsafe_req = (int *)calloc(bs.num_resources, sizeof(int));
+    unsafe_req[0] = 3;
+    unsafe_req[1] = 3;
+    unsafe_req[2] = 0;
+
+    int safe_seq[5];
+    int seq_len = 0;
+    bool is_safe = banker_check_request_safety(&bs, 4, unsafe_req, NULL, safe_seq, &seq_len);
+    assert(is_safe == false);
+
+    /* Verify original bs is identical to snapshot */
+    for (int j = 0; j < bs.num_resources; j++) {
+        assert(bs.available[j] == snapshot.available[j]);
+    }
+    for (int i = 0; i < bs.num_processes; i++) {
+        for (int j = 0; j < bs.num_resources; j++) {
+            assert(bs.allocation[i][j] == snapshot.allocation[i][j]);
+            assert(bs.max[i][j] == snapshot.max[i][j]);
+            assert(bs.need[i][j] == snapshot.need[i][j]);
+        }
+    }
+
+    free(unsafe_req);
+    banker_system_cleanup(&snapshot);
+    banker_system_cleanup(&bs);
+    printf("[PASS] Test 6 Passed: Need invariant and state restoration verified.\n\n");
+}
 int main(void) {
     printf("========================================\n");
     printf("  DEADLOCKDOCTOR BANKER'S ALGORITHM TESTS \n");
@@ -185,6 +266,8 @@ int main(void) {
     test_unsafe_state();
     test_safe_request();
     test_unsafe_request();
+    test_invalid_request_vector();
+    test_need_invariant_and_restoration();
 
     printf("========================================\n");
     printf("  ALL BANKER TEST CASES PASSED SUCCESSFULLY\n");
