@@ -1,4 +1,5 @@
 #include "scenario.h"
+#include "monitor.h"
 #include "logger.h"
 #include "recovery.h"
 #include "process_demo.h"
@@ -304,4 +305,154 @@ bool scenario_replay_file(SystemManager *sm, const char *filepath) {
                step_num - 1);
     }
     return (error_count == 0);
+}
+
+void scenario_step_session_init(ScenarioStepSession *sess) {
+    if (!sess) return;
+    sess->lines = NULL;
+    sess->total_lines = 0;
+    sess->current_step = 0;
+    sess->filepath[0] = '\0';
+}
+
+void scenario_step_session_cleanup(ScenarioStepSession *sess) {
+    if (!sess) return;
+    if (sess->lines) {
+        for (int i = 0; i < sess->total_lines; i++) {
+            if (sess->lines[i]) free(sess->lines[i]);
+        }
+        free(sess->lines);
+        sess->lines = NULL;
+    }
+    sess->total_lines = 0;
+    sess->current_step = 0;
+    sess->filepath[0] = '\0';
+}
+
+bool scenario_step_session_load(ScenarioStepSession *sess, const char *filepath) {
+    if (!sess || !filepath) return false;
+    scenario_step_session_cleanup(sess);
+
+    strncpy(sess->filepath, filepath, sizeof(sess->filepath) - 1);
+    sess->filepath[sizeof(sess->filepath) - 1] = '\0';
+
+    int fd = open(filepath, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "[Scenario Error] Cannot open scenario file '%s' (errno=%d: %s)\n",
+                filepath, errno, strerror(errno));
+        return false;
+    }
+
+    PosixFileReader reader;
+    posix_reader_init(&reader, fd);
+
+    char line_buf[MAX_CMD_LEN];
+    int capacity = 16;
+    sess->lines = (char **)malloc(capacity * sizeof(char *));
+    if (!sess->lines) {
+        close(fd);
+        return false;
+    }
+
+    while (posix_reader_readline(&reader, line_buf, sizeof(line_buf)) > 0) {
+        char *ptr = line_buf;
+        while (*ptr == ' ' || *ptr == '\t') ptr++;
+        char *comment = strchr(ptr, '#');
+        if (comment) *comment = '\0';
+        size_t len = strlen(ptr);
+        while (len > 0 && (ptr[len - 1] == '\n' || ptr[len - 1] == '\r' || ptr[len - 1] == ' ' || ptr[len - 1] == '\t')) {
+            ptr[--len] = '\0';
+        }
+        if (len == 0) continue;
+
+        if (sess->total_lines >= capacity) {
+            capacity *= 2;
+            char **new_lines = (char **)realloc(sess->lines, capacity * sizeof(char *));
+            if (!new_lines) break;
+            sess->lines = new_lines;
+        }
+
+        sess->lines[sess->total_lines] = strdup(ptr);
+        sess->total_lines++;
+    }
+
+    close(fd);
+    sess->current_step = 0;
+    return (sess->total_lines > 0);
+}
+
+bool scenario_step_session_next(ScenarioStepSession *sess, SystemManager *sm) {
+    if (!sess || !sm || sess->current_step >= sess->total_lines) return false;
+
+    const char *line = sess->lines[sess->current_step];
+    int step_num = sess->current_step + 1;
+
+    printf("\n--------------------------------------------------------------------------------\n");
+    printf(">>> [STEP %d/%d] Executing: %s\n", step_num, sess->total_lines, line);
+    printf("--------------------------------------------------------------------------------\n");
+
+    bool ok = scenario_execute_line(sm, line, step_num);
+
+    /* Build system snapshot for timeline */
+    char snap[128];
+    int avail_units = 0;
+    for (int r = 0; r < sm->rm.count; r++) avail_units += sm->rm.resources[r].available_instances;
+    snprintf(snap, sizeof(snap), "Procs:%d Avail:%d", sm->pm.count, avail_units);
+
+    timeline_record(&sm->timeline, TIMELINE_SCENARIO_STEP, NULL, NULL, 0, snap,
+                    "Step %d/%d: %s -> %s", step_num, sess->total_lines, line, ok ? "OK" : "WARN");
+
+    sess->current_step++;
+    return ok;
+}
+
+void scenario_step_session_run_interactive(SystemManager *sm, const char *filepath) {
+    if (!sm || !filepath) return;
+
+    ScenarioStepSession sess;
+    scenario_step_session_init(&sess);
+
+    if (!scenario_step_session_load(&sess, filepath)) {
+        fprintf(stderr, "[Scenario Error] Failed to load scenario file '%s'.\n", filepath);
+        scenario_step_session_cleanup(&sess);
+        return;
+    }
+
+    printf("\n================================================================================\n");
+    printf("       DETERMINISTIC STEP-BY-STEP SCENARIO REPLAY: %s\n", filepath);
+    printf("       Loaded %d operational steps. Stepping mode engaged.\n", sess.total_lines);
+    printf("================================================================================\n");
+
+    bool is_interactive = isatty(STDIN_FILENO);
+    bool run_all = false;
+
+    while (sess.current_step < sess.total_lines) {
+        scenario_step_session_next(&sess, sm);
+
+        if (sess.current_step < sess.total_lines) {
+            if (!run_all && is_interactive) {
+                printf("\n[STEP %d/%d DONE] [Enter]=Next step | [c]=Continue to end | [m]=Show monitor | [q]=Quit step mode > ",
+                       sess.current_step, sess.total_lines);
+                char choice[64] = "";
+                if (fgets(choice, sizeof(choice), stdin)) {
+                    if (choice[0] == 'q' || choice[0] == 'Q') {
+                        printf("\n[Step-by-step replay aborted by user at step %d/%d]\n",
+                               sess.current_step, sess.total_lines);
+                        break;
+                    } else if (choice[0] == 'c' || choice[0] == 'C') {
+                        run_all = true;
+                    } else if (choice[0] == 'm' || choice[0] == 'M') {
+                        monitor_show_combined(sm);
+                    }
+                }
+            }
+        }
+    }
+
+    printf("\n================================================================================\n");
+    printf(">>> SCENARIO REPLAY COMPLETED: Executed %d/%d steps <<<\n", sess.current_step, sess.total_lines);
+    printf("================================================================================\n\n");
+
+    monitor_show_combined(sm);
+    scenario_step_session_cleanup(&sess);
 }

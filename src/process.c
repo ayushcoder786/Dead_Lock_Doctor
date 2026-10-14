@@ -41,6 +41,9 @@ void process_destroy(Process *proc) {
     if (proc->max_demand) {
         free(proc->max_demand);
         proc->max_demand = NULL;
+    clock_gettime(CLOCK_MONOTONIC, &proc->state_entry_time);
+    proc->blocked_time = (struct timespec){0, 0};
+    proc->accumulated_wait_ms = 0.0;
     }
     free(proc);
 }
@@ -134,6 +137,9 @@ Process *process_create(ProcessManager *pm, int id, const char *name) {
     proc->allocated = NULL;
     proc->requested = NULL;
     proc->max_demand = NULL;
+    clock_gettime(CLOCK_MONOTONIC, &proc->state_entry_time);
+    proc->blocked_time = (struct timespec){0, 0};
+    proc->accumulated_wait_ms = 0.0;
 
     /* Initial resource capacity */
     if (!process_ensure_resource_capacity(proc, 4)) {
@@ -250,7 +256,7 @@ bool process_terminate(ProcessManager *pm, int id) {
         return false;
     }
 
-    proc->state = PROCESS_STATE_COMPLETED;
+    process_set_state(proc, PROCESS_STATE_COMPLETED);
     return true;
 }
 
@@ -356,3 +362,39 @@ void process_set_priority(Process *proc, int priority) {
     }
 }
 
+
+void process_set_state(Process *proc, ProcessState state) {
+    if (!proc) return;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    if (state == PROCESS_STATE_BLOCKED && proc->state != PROCESS_STATE_BLOCKED) {
+        proc->blocked_time = now;
+    } else if (proc->state == PROCESS_STATE_BLOCKED && state != PROCESS_STATE_BLOCKED) {
+        if (proc->blocked_time.tv_sec != 0 || proc->blocked_time.tv_nsec != 0) {
+            double sec = (double)(now.tv_sec - proc->blocked_time.tv_sec);
+            double nsec = (double)(now.tv_nsec - proc->blocked_time.tv_nsec);
+            double elapsed_ms = (sec * 1000.0) + (nsec / 1000000.0);
+            if (elapsed_ms > 0.0) {
+                proc->accumulated_wait_ms += elapsed_ms;
+            }
+        }
+        proc->blocked_time = (struct timespec){0, 0};
+    }
+
+    proc->state = state;
+    proc->state_entry_time = now;
+}
+
+double process_get_waiting_duration_ms(const Process *proc) {
+    if (!proc) return 0.0;
+    if (proc->state != PROCESS_STATE_BLOCKED) return 0.0;
+    if (proc->blocked_time.tv_sec == 0 && proc->blocked_time.tv_nsec == 0) return 0.0;
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double sec = (double)(now.tv_sec - proc->blocked_time.tv_sec);
+    double nsec = (double)(now.tv_nsec - proc->blocked_time.tv_nsec);
+    double elapsed_ms = (sec * 1000.0) + (nsec / 1000000.0);
+    return elapsed_ms > 0.0 ? elapsed_ms : 0.0;
+}

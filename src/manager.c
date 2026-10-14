@@ -1,4 +1,8 @@
 #include "manager.h"
+#include "monitor.h"
+#include "timeline.h"
+#include "trace.h"
+#include "timeout.h"
 #include "scenario.h"
 #include "logger.h"
 #include "recovery.h"
@@ -171,6 +175,7 @@ void system_manager_init(SystemManager *sm) {
     resource_manager_init(&sm->rm);
     sm->is_running = true;
     sm->strategy = STRATEGY_DETECTION_RECOVERY;
+    timeline_init(&sm->timeline);
     sm->banker_avoidance_enabled = false; /* Detection mode by default; enable via banker-mode on */
     logger_init(DEFAULT_LOG_FILE);
     logger_log(LOG_INFO, "DeadlockDoctor system manager initialized.");
@@ -238,6 +243,7 @@ void system_manager_cleanup(SystemManager *sm) {
     logger_close();
     process_manager_cleanup(&sm->pm);
     resource_manager_cleanup(&sm->rm);
+    timeline_cleanup(&sm->timeline);
     sm->is_running = false;
 }
 
@@ -245,6 +251,7 @@ Process *system_manager_create_process(SystemManager *sm, int id, const char *na
     if (!sm) return NULL;
     Process *p = process_create(&sm->pm, id, name);
     if (p) {
+        timeline_record(&sm->timeline, TIMELINE_PROCESS_CREATE, name, NULL, 0, NULL, "Process '%s' (PID %d) registered", name, id);
         if (sm->rm.count > 0) {
             process_ensure_resource_capacity(p, sm->rm.count);
         }
@@ -258,6 +265,7 @@ Resource *system_manager_create_resource(SystemManager *sm, int id, const char *
     if (!sm) return NULL;
     Resource *r = resource_create(&sm->rm, id, name, total_instances);
     if (r) {
+        timeline_record(&sm->timeline, TIMELINE_RESOURCE_CREATE, NULL, name, total_instances, NULL, "Resource '%s' created (Total: %d)", name, total_instances);
         for (int i = 0; i < sm->pm.count; i++) {
             if (sm->pm.processes[i]) {
                 process_ensure_resource_capacity(sm->pm.processes[i], sm->rm.count);
@@ -337,6 +345,7 @@ AllocResult system_manager_request(SystemManager *sm, const char *proc_ident, co
 
     logger_log(LOG_RESOURCE_REQUEST, "Process '%s' (PID %d) requested %d units of resource '%s'.",
                proc->name, proc->id, units, res->name);
+    timeline_record(&sm->timeline, TIMELINE_RESOURCE_REQUEST, proc->name, res->name, units, NULL, "Request for %d units of '%s'", units, res->name);
 
     /* 1. Check whether requested amount is <= Need */
     if (proc->max_demand[res_idx] > 0) {
@@ -385,11 +394,12 @@ AllocResult system_manager_request(SystemManager *sm, const char *proc_ident, co
     /* 2. Check whether requested amount is <= Available */
     if (units > res->available_instances) {
         proc->requested[res_idx] = units;
-        proc->state = PROCESS_STATE_BLOCKED;
+        process_set_state(proc, PROCESS_STATE_BLOCKED);
         printf("[BLOCKED] Process '%s' (PID %d) requested %d units of '%s', but only %d available. Process marked BLOCKED.\n",
                proc->name, proc->id, units, res->name, res->available_instances);
         logger_log(LOG_RESOURCE_BLOCK, "Process '%s' (PID %d) request for %d units of '%s' BLOCKED (Insufficient available: %d).",
                    proc->name, proc->id, units, res->name, res->available_instances);
+        timeline_record(&sm->timeline, TIMELINE_RESOURCE_BLOCK, proc->name, res->name, units, NULL, "BLOCKED: Insufficient available (%d/%d)", res->available_instances, units);
         return ALLOC_BLOCKED;
     }
 
@@ -422,7 +432,7 @@ AllocResult system_manager_request(SystemManager *sm, const char *proc_ident, co
             if (!is_safe) {
                 /* Resulting state is UNSAFE: block request and restore previous state */
                 proc->requested[res_idx] = units;
-                proc->state = PROCESS_STATE_BLOCKED;
+                process_set_state(proc, PROCESS_STATE_BLOCKED);
                 printf("SYSTEM STATE: UNSAFE\n");
                 printf("Request BLOCKED\n");
                 logger_log(LOG_RESOURCE_BLOCK, "Process '%s' (PID %d) request for %d units of '%s' BLOCKED by Banker avoidance (SYSTEM STATE: UNSAFE).",
@@ -443,7 +453,7 @@ AllocResult system_manager_request(SystemManager *sm, const char *proc_ident, co
                 }
             }
             if (!still_blocked) {
-                proc->state = PROCESS_STATE_RUNNING;
+                process_set_state(proc, PROCESS_STATE_RUNNING);
             }
 
             printf("[GRANTED] Process '%s' (PID %d) allocated %d units of '%s'. (Allocated: %d, Available: %d)\n",
@@ -462,7 +472,7 @@ AllocResult system_manager_request(SystemManager *sm, const char *proc_ident, co
     res->available_instances -= units;
     proc->allocated[res_idx] += units;
     proc->requested[res_idx] = 0;
-    proc->state = PROCESS_STATE_RUNNING;
+    process_set_state(proc, PROCESS_STATE_RUNNING);
     printf("[GRANTED] Process '%s' (PID %d) allocated %d units of '%s'. (Allocated: %d, Available: %d)\n",
            proc->name, proc->id, units, res->name, proc->allocated[res_idx], res->available_instances);
     logger_log(LOG_RESOURCE_GRANT, "Process '%s' (PID %d) GRANTED %d units of '%s' (Allocated: %d, Available: %d).",
@@ -634,7 +644,7 @@ void system_manager_check_pending_requests(SystemManager *sm) {
                                    proc->name, proc->id, req_val, sm->rm.resources[r].name, sm->rm.resources[r].available_instances);
                     }
                 }
-                proc->state = PROCESS_STATE_RUNNING;
+                process_set_state(proc, PROCESS_STATE_RUNNING);
                 progress = true;
                 break;
             }
@@ -1020,6 +1030,9 @@ void system_manager_print_help(void) {
     printf("  [SYSTEM STATUS & HELP]\n");
     printf("    help                               - Display this beginner-friendly command guide\n");
     printf("    status                             - Display system matrices (Available, Alloc, Max, Need)\n");
+    printf("    monitor                            - Live process monitor (state, held, pending, wait duration)\n");
+    printf("    dashboard                          - Resource utilization dashboard (total, alloc, avail, %%%%)\n");
+    printf("    live                               - Interactive auto-refreshing monitor and dashboard\n");
     printf("    pwd                                - Print current working directory\n");
     printf("    cd [path]                          - Change directory (~, .., /path, -)\n\n");
 
@@ -1433,6 +1446,36 @@ void system_manager_run_cli(SystemManager *sm) {
             }
         } else if (strcasecmp(cmd, "log") == 0 || strcasecmp(cmd, "show-log") == 0) {
             logger_print_log();
+        } else if (strcasecmp(cmd, "timeline") == 0 || strcasecmp(cmd, "events") == 0) {
+            int max_ev = 0;
+            char filter[64] = "";
+            if (argc > 1) {
+                if (isdigit((unsigned char)args[1][0])) {
+                    max_ev = atoi(args[1]);
+                } else if (strcasecmp(args[1], "clear") == 0) {
+                    timeline_clear(&sm->timeline);
+                    printf("[OK] Event timeline cleared.\n");
+                    continue;
+                } else {
+                    strncpy(filter, args[1], sizeof(filter) - 1);
+                }
+            }
+            if (argc > 2 && filter[0] == '\0') {
+                strncpy(filter, args[2], sizeof(filter) - 1);
+            }
+            timeline_show(&sm->timeline, max_ev, filter[0] != '\0' ? filter : NULL);
+        } else if (strcasecmp(cmd, "step") == 0 || strcasecmp(cmd, "replay-step") == 0) {
+            if (argc > 1) {
+                scenario_step_session_run_interactive(sm, args[1]);
+            } else {
+                printf("[Error] Usage: step <scenario-file>\n");
+            }
+        } else if (strcasecmp(cmd, "monitor") == 0 || strcasecmp(cmd, "proc-monitor") == 0) {
+            monitor_show_process_table(&sm->pm, &sm->rm);
+        } else if (strcasecmp(cmd, "dashboard") == 0 || strcasecmp(cmd, "res-dashboard") == 0) {
+            monitor_show_resource_dashboard(&sm->rm, &sm->pm);
+        } else if (strcasecmp(cmd, "live") == 0 || strcasecmp(cmd, "top") == 0) {
+            monitor_run_live(sm, 1000, 0);
         } else if (strcasecmp(cmd, "status") == 0) {
             system_manager_show_status(sm);
         } else if (strcasecmp(cmd, "demo") == 0) {
@@ -1549,6 +1592,34 @@ void system_manager_run_cli(SystemManager *sm) {
                 printf("Current deadlock management strategy: %s\n", system_manager_get_strategy_name(sm->strategy));
                 printf("Use 'strategy compare' to view comparative trade-offs.\n");
             }
+        } else if (strcasecmp(cmd, "timeout") == 0 || strcasecmp(cmd, "timeout-audit") == 0) {
+            double thresh = 1000.0;
+            if (argc > 1) {
+                thresh = atof(args[1]);
+                if (thresh <= 0.0) thresh = 1000.0;
+            }
+            TimeoutAuditResult tres;
+            timeout_run_audit(sm, thresh, &tres);
+            timeout_print_audit_report(&tres);
+            timeout_cleanup_audit(&tres);
+        } else if (strcasecmp(cmd, "trace") == 0 || strcasecmp(cmd, "strace") == 0 || strcasecmp(cmd, "strace-demo") == 0) {
+            trace_run_demonstration();
+        } else if (strcasecmp(cmd, "compare") == 0 || strcasecmp(cmd, "algo-compare") == 0) {
+            int p = 10, r = 4, ops = 80;
+            unsigned int s = 42;
+            if (argc > 1) p = atoi(args[1]);
+            if (argc > 2) r = atoi(args[2]);
+            if (argc > 3) ops = atoi(args[3]);
+            if (argc > 4) s = (unsigned int)atoi(args[4]);
+            benchmark_compare_algorithms(p, r, ops, s);
+        } else if (strcasecmp(cmd, "stress") == 0) {
+            int p = 20, r = 6, ops = 300;
+            unsigned int s = 777;
+            if (argc > 1) p = atoi(args[1]);
+            if (argc > 2) r = atoi(args[2]);
+            if (argc > 3) ops = atoi(args[3]);
+            if (argc > 4) s = (unsigned int)atoi(args[4]);
+            benchmark_run_stress_test(p, r, ops, s);
         } else if (strcasecmp(cmd, "benchmark") == 0) {
             benchmark_run_suite();
         } else if (strcasecmp(cmd, "fork-demo") == 0 || strcasecmp(cmd, "process-demo") == 0) {

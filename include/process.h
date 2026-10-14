@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "resource.h"
+#include <time.h>
 
 typedef struct {
     int id;
@@ -13,6 +14,9 @@ typedef struct {
     int *allocated;                /* dynamically allocated instances per resource index */
     int *requested;                /* dynamically allocated pending requests per resource index */
     int *max_demand;               /* dynamically allocated maximum instances needed */
+    struct timespec state_entry_time;   /* Timestamp when current state was entered */
+    struct timespec blocked_time;       /* Timestamp when process became BLOCKED */
+    double accumulated_wait_ms;         /* Total time spent in BLOCKED state */
 } Process;
 
 typedef struct {
@@ -35,6 +39,8 @@ bool process_terminate(ProcessManager *pm, int id);
 void process_set_priority(Process *proc, int priority);
 int process_get_need(const Process *proc, int res_index, int total_instances);
 void process_list(const ProcessManager *pm, const ResourceManager *rm);
+void process_set_state(Process *proc, ProcessState state);
+double process_get_waiting_duration_ms(const Process *proc);
 
 #endif /* DEADLOCKDOCTOR_PROCESS_H */
 

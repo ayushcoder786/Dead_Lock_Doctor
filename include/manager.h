@@ -7,6 +7,7 @@
 #include "banker.h"
 #include "graph.h"
 #include "detector.h"
+#include "timeline.h"
 
 typedef enum {
     STRATEGY_DETECTION_RECOVERY = 0, /* Allow allocations, detect deadlock, recover */
@@ -21,6 +22,7 @@ typedef struct SystemManager {
     bool is_running;
     bool banker_avoidance_enabled;
     DeadlockStrategy strategy;
+    EventTimeline timeline;
 } SystemManager;
 
 void system_manager_init(SystemManager *sm);

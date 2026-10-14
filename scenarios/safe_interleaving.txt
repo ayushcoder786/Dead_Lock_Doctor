@@ -1,0 +1,44 @@
+# DeadlockDoctor Safe Interleaving Scenario
+# Demonstrates multiple processes contending for shared multi-instance resources
+# with temporary blocking that resolves naturally WITHOUT deadlocks.
+
+PROCESS P1 1
+PROCESS P2 2
+PROCESS P3 3
+
+RESOURCE R1 2 1
+RESOURCE R2 2 2
+
+MAX P1 R1 2
+MAX P1 R2 1
+MAX P2 R1 1
+MAX P2 R2 2
+MAX P3 R1 1
+MAX P3 R2 1
+
+# P1 acquires R1:1, P2 acquires R2:1, P3 acquires R1:1 (All R1 allocated)
+REQUEST P1 R1 1
+REQUEST P2 R2 1
+REQUEST P3 R1 1
+
+# P1 requests R2:1 (Granted: R2 available: 1)
+REQUEST P1 R2 1
+
+# P2 requests R1:1 (Blocked: R1 available: 0 -> Temporary Contention)
+REQUEST P2 R1 1
+
+# P1 finishes critical section and releases held resources
+RELEASE P1 R1 1
+RELEASE P1 R2 1
+
+# P2 unblocks and finishes work
+RELEASE P2 R1 1
+RELEASE P2 R2 1
+
+# P3 acquires and releases
+REQUEST P3 R2 1
+RELEASE P3 R1 1
+RELEASE P3 R2 1
+
+# Multi-instance detector confirms no deadlock
+DETECT

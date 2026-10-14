@@ -17,6 +17,11 @@ TEST_PROCESS_DEMO_BIN = $(OBJ_DIR)/test_process_demo_bin
 TEST_GRAPH_BIN = $(OBJ_DIR)/test_graph_bin
 TEST_IPC_BIN = $(OBJ_DIR)/test_ipc_bin
 TEST_RECOVERY_BIN = $(OBJ_DIR)/test_recovery_bin
+TEST_MONITOR_BIN = $(OBJ_DIR)/test_monitor_bin
+TEST_TIMELINE_BIN = $(OBJ_DIR)/test_timeline_bin
+TEST_BENCH_COMPARE_BIN = $(OBJ_DIR)/test_bench_compare_bin
+TEST_TRACE_BIN = $(OBJ_DIR)/test_trace_bin
+TEST_TIMEOUT_BIN = $(OBJ_DIR)/test_timeout_bin
 
 SRCS = $(SRC_DIR)/main.c \
        $(SRC_DIR)/process.c \
@@ -30,9 +35,31 @@ SRCS = $(SRC_DIR)/main.c \
        $(SRC_DIR)/ipc.c \
        $(SRC_DIR)/logger.c \
        $(SRC_DIR)/process_demo.c \
-       $(SRC_DIR)/benchmark.c
+       $(SRC_DIR)/benchmark.c \
+       $(SRC_DIR)/monitor.c \
+       $(SRC_DIR)/timeline.c \
+       $(SRC_DIR)/trace.c \
+       $(SRC_DIR)/timeout.c
 
 OBJS = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+
+# Common dependencies for tests that instantiate SystemManager
+MGR_OBJS = $(OBJ_DIR)/manager.o \
+            $(OBJ_DIR)/banker.o \
+            $(OBJ_DIR)/detector.o \
+            $(OBJ_DIR)/graph.o \
+            $(OBJ_DIR)/process.o \
+            $(OBJ_DIR)/resource.o \
+            $(OBJ_DIR)/recovery.o \
+            $(OBJ_DIR)/scenario.o \
+            $(OBJ_DIR)/logger.o \
+            $(OBJ_DIR)/process_demo.o \
+            $(OBJ_DIR)/ipc.o \
+            $(OBJ_DIR)/benchmark.o \
+            $(OBJ_DIR)/monitor.o \
+            $(OBJ_DIR)/timeline.o \
+            $(OBJ_DIR)/trace.o \
+            $(OBJ_DIR)/timeout.o
 
 TEST_BANKER_OBJS = $(OBJ_DIR)/test_banker.o \
                    $(OBJ_DIR)/banker.o \
@@ -46,20 +73,6 @@ TEST_DETECTOR_OBJS = $(OBJ_DIR)/test_detector.o \
                      $(OBJ_DIR)/process.o \
                      $(OBJ_DIR)/resource.o \
                      $(OBJ_DIR)/logger.o
-
-TEST_SCENARIO_OBJS = $(OBJ_DIR)/test_scenario.o \
-                     $(OBJ_DIR)/scenario.o \
-                     $(OBJ_DIR)/manager.o \
-                     $(OBJ_DIR)/banker.o \
-                     $(OBJ_DIR)/detector.o \
-                     $(OBJ_DIR)/graph.o \
-                     $(OBJ_DIR)/process.o \
-                     $(OBJ_DIR)/resource.o \
-                     $(OBJ_DIR)/recovery.o \
-                     $(OBJ_DIR)/logger.o \
-                     $(OBJ_DIR)/process_demo.o \
-                     $(OBJ_DIR)/ipc.o \
-                     $(OBJ_DIR)/benchmark.o
 
 TEST_LOGGER_OBJS = $(OBJ_DIR)/test_logger.o \
                    $(OBJ_DIR)/logger.o
@@ -75,35 +88,21 @@ TEST_GRAPH_OBJS = $(OBJ_DIR)/test_graph.o \
                   $(OBJ_DIR)/resource.o \
                   $(OBJ_DIR)/logger.o
 
-TEST_IPC_OBJS = $(OBJ_DIR)/test_ipc.o \
-                $(OBJ_DIR)/ipc.o \
-                $(OBJ_DIR)/manager.o \
-                $(OBJ_DIR)/banker.o \
-                $(OBJ_DIR)/detector.o \
-                $(OBJ_DIR)/graph.o \
-                $(OBJ_DIR)/process.o \
-                $(OBJ_DIR)/resource.o \
-                $(OBJ_DIR)/recovery.o \
-                $(OBJ_DIR)/scenario.o \
-                $(OBJ_DIR)/logger.o \
-                $(OBJ_DIR)/process_demo.o \
-                     $(OBJ_DIR)/benchmark.o
+TEST_TRACE_OBJS = $(OBJ_DIR)/test_trace.o \
+                  $(OBJ_DIR)/trace.o
 
-TEST_RECOVERY_OBJS = $(OBJ_DIR)/test_recovery.o \
-                     $(OBJ_DIR)/recovery.o \
-                     $(OBJ_DIR)/manager.o \
-                     $(OBJ_DIR)/banker.o \
-                     $(OBJ_DIR)/detector.o \
-                     $(OBJ_DIR)/graph.o \
-                     $(OBJ_DIR)/process.o \
-                     $(OBJ_DIR)/resource.o \
-                     $(OBJ_DIR)/scenario.o \
-                     $(OBJ_DIR)/logger.o \
-                     $(OBJ_DIR)/process_demo.o \
-                     $(OBJ_DIR)/ipc.o \
-                     $(OBJ_DIR)/benchmark.o
+TEST_SCENARIO_OBJS = $(OBJ_DIR)/test_scenario.o $(MGR_OBJS)
+TEST_IPC_OBJS = $(OBJ_DIR)/test_ipc.o $(MGR_OBJS)
+TEST_RECOVERY_OBJS = $(OBJ_DIR)/test_recovery.o $(MGR_OBJS)
+TEST_MONITOR_OBJS = $(OBJ_DIR)/test_monitor.o $(MGR_OBJS)
+TEST_TIMELINE_OBJS = $(OBJ_DIR)/test_timeline.o $(MGR_OBJS)
+TEST_BENCH_COMPARE_OBJS = $(OBJ_DIR)/test_benchmark_compare.o $(MGR_OBJS)
+TEST_TIMEOUT_OBJS = $(OBJ_DIR)/test_timeout.o $(MGR_OBJS)
 
-.PHONY: all clean run test test_banker test_detector test_scenario test_logger test_process_demo test_graph test_ipc test_recovery test_thread_deadlock thread_demo asan test_asan valgrind
+.PHONY: all clean run test thread_demo asan test_asan valgrind \
+        test_banker test_detector test_scenario test_logger test_process_demo \
+        test_graph test_ipc test_recovery test_thread_deadlock \
+        test_monitor test_timeline test_bench_compare test_trace test_timeout
 
 all: $(TARGET) $(WORKER_BIN) $(THREAD_DEADLOCK_BIN)
 
@@ -149,6 +148,21 @@ $(TEST_IPC_BIN): $(TEST_IPC_OBJS)
 $(TEST_RECOVERY_BIN): $(TEST_RECOVERY_OBJS)
 	$(CC) $(TEST_RECOVERY_OBJS) $(LDFLAGS) -o $@
 
+$(TEST_MONITOR_BIN): $(TEST_MONITOR_OBJS)
+	$(CC) $(TEST_MONITOR_OBJS) $(LDFLAGS) -o $@
+
+$(TEST_TIMELINE_BIN): $(TEST_TIMELINE_OBJS)
+	$(CC) $(TEST_TIMELINE_OBJS) $(LDFLAGS) -o $@
+
+$(TEST_BENCH_COMPARE_BIN): $(TEST_BENCH_COMPARE_OBJS)
+	$(CC) $(TEST_BENCH_COMPARE_OBJS) $(LDFLAGS) -o $@
+
+$(TEST_TRACE_BIN): $(TEST_TRACE_OBJS)
+	$(CC) $(TEST_TRACE_OBJS) $(LDFLAGS) -o $@
+
+$(TEST_TIMEOUT_BIN): $(TEST_TIMEOUT_OBJS)
+	$(CC) $(TEST_TIMEOUT_OBJS) $(LDFLAGS) -o $@
+
 test_banker: $(TEST_BANKER_BIN)
 	./$(TEST_BANKER_BIN)
 
@@ -176,10 +190,25 @@ test_recovery: $(TEST_RECOVERY_BIN)
 test_thread_deadlock: $(THREAD_DEADLOCK_BIN)
 	./$(THREAD_DEADLOCK_BIN)
 
+test_monitor: $(TEST_MONITOR_BIN)
+	./$(TEST_MONITOR_BIN)
+
+test_timeline: $(TEST_TIMELINE_BIN)
+	./$(TEST_TIMELINE_BIN)
+
+test_bench_compare: $(TEST_BENCH_COMPARE_BIN)
+	./$(TEST_BENCH_COMPARE_BIN)
+
+test_trace: $(TEST_TRACE_BIN)
+	./$(TEST_TRACE_BIN)
+
+test_timeout: $(TEST_TIMEOUT_BIN)
+	./$(TEST_TIMEOUT_BIN)
+
 thread_demo: $(THREAD_DEADLOCK_BIN)
 	./$(THREAD_DEADLOCK_BIN)
 
-test: test_banker test_detector test_scenario test_logger test_process_demo test_graph test_ipc test_recovery test_thread_deadlock
+test: test_banker test_detector test_scenario test_logger test_process_demo test_graph test_ipc test_recovery test_thread_deadlock test_monitor test_timeline test_bench_compare test_trace test_timeout
 
 # AddressSanitizer Build and Test Suite
 asan: CFLAGS += -g -fsanitize=address
@@ -189,6 +218,7 @@ asan: clean all $(TEST_SCENARIO_BIN) $(TEST_BANKER_BIN) $(TEST_DETECTOR_BIN) $(T
 	./$(TARGET) scenarios/safe.txt
 	./$(TARGET) scenarios/unsafe.txt
 	./$(TARGET) scenarios/deadlock.txt
+	./$(TARGET) scenarios/safe_interleaving.txt
 	./$(TEST_SCENARIO_BIN)
 	./$(TEST_RECOVERY_BIN)
 	./$(THREAD_DEADLOCK_BIN)
@@ -196,7 +226,7 @@ asan: clean all $(TEST_SCENARIO_BIN) $(TEST_BANKER_BIN) $(TEST_DETECTOR_BIN) $(T
 
 test_asan: CFLAGS += -g -fsanitize=address
 test_asan: LDFLAGS += -fsanitize=address
-test_asan: clean all test_banker test_detector test_scenario test_logger test_graph test_recovery test_thread_deadlock
+test_asan: clean all $(WORKER_BIN) test_banker test_detector test_scenario test_logger test_process_demo test_graph test_ipc test_recovery test_thread_deadlock test_monitor test_timeline test_bench_compare test_trace test_timeout
 	@echo "=== AddressSanitizer Complete Test Suite Passed ==="
 
 valgrind: clean all

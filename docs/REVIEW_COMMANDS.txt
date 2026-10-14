@@ -1,0 +1,78 @@
+================================================================================
+          DEADLOCKDOCTOR — ESSENTIAL COLLEGE REVIEW COMMAND CHEATSHEET
+================================================================================
+NOTE:
+- First compile and launch the interactive shell from Ubuntu WSL:
+    make
+    ./deadlockdoctor
+- All numbered commands below must be entered directly at the "deadlockdoctor>"
+  interactive prompt unless specifically indicated as a bash shell command.
+================================================================================
+
+1. help
+   Show all available project commands, options, and syntax.
+
+2. status
+   Display the initial process list, Available vector, and resource matrices.
+
+3. process create P1
+   process create P2
+   Register two simulated processes (P1 with PID 1, P2 with PID 2).
+
+4. resource create R1 1
+   resource create R2 1
+   max P1 R1 1
+   max P1 R2 1
+   max P2 R1 1
+   max P2 R2 1
+   Create resources R1 and R2 (1 unit each) and declare maximum claims for both processes.
+
+5. request P1 R1 1
+   request P2 R2 1
+   Allocate resource R1 to process P1 and resource R2 to process P2.
+
+6. request P1 R2 1
+   request P2 R1 1
+   P1 requests held resource R2 (blocks) and P2 requests held resource R1 (blocks), creating a circular wait.
+
+7. graph
+   Display the Resource Allocation Graph (RAG) and Wait-For Graph (WFG) highlighting the cycle.
+
+8. detect
+   Run the deadlock detection algorithm to find and report the exact deadlocked set (P1, P2).
+
+9. recover
+   Execute lowest-cost victim selection (P1), abort victim, reclaim R1, and grant pending request to P2.
+
+10. status
+    Verify updated system state (P1 is ABORTED, P2 is RUNNING with all needed resources, 0 deadlocks).
+
+11. detect
+    Re-run deadlock detection to confirm that circular wait is completely resolved (NO DEADLOCK DETECTED).
+
+12. load scenarios/safe.txt
+    load scenarios/unsafe.txt
+    Demonstrate Dijkstra's Banker's Algorithm discovering a safe sequence vs. detecting an unsafe state and blocking requests.
+
+13. load scenarios/deadlock.txt
+    load scenarios/multi_instance.txt
+    Replay scenario files demonstrating crafted circular-wait deadlock and multi-instance matrix reduction.
+
+14. demo thread
+    Run real POSIX thread demonstration showing ABBA mutex lock inversion, deadlock detection, and recovery.
+
+15. exit
+    Safely exit the DeadlockDoctor interactive shell.
+
+================================================================================
+OPTIONAL VIVA DEMONSTRATION COMMANDS (Run from Linux bash terminal):
+================================================================================
+  * Run 3-way algorithm comparative benchmark:
+      ./deadlockdoctor --compare
+  * Run reproducible high-concurrency stress test:
+      ./deadlockdoctor --stress
+  * Run timeout-based detection & false-alarm audit:
+      ./build/test_timeout_bin
+  * Run system-call tracing probe:
+      ./deadlockdoctor --trace
+================================================================================
